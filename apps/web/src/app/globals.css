@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  min-height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Light theme (default) */
+  background-color: #f4f4f5;
+  color: #020617;
+}
+
+/* Dark mode styles - applied when 'dark' class is present on <html> or <body> */
+.dark body,
+html.dark body {
+  background-color: #020617;
+  color: #e5e7eb;
+}
+

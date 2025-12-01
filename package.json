@@ -1,0 +1,8 @@
+{
+  "name": "zcash-chat",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ]
+}
