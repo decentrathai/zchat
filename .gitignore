@@ -12,6 +12,10 @@ coverage/
 .out/
 .cache/
 
+# Rust build outputs
+target/
+**/target/
+
 # Env files
 .env
 .env.local
