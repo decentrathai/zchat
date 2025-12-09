@@ -4,5 +4,13 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "scripts": {
+    "build": "pnpm --filter @zchat/landing build",
+    "build:landing": "pnpm --filter @zchat/landing build",
+    "build:web": "pnpm --filter web build",
+    "dev:landing": "pnpm --filter @zchat/landing dev",
+    "dev:web": "pnpm --filter web dev",
+    "dev:backend": "pnpm --filter backend dev"
+  }
 }
