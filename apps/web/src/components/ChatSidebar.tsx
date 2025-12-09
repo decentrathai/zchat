@@ -4,6 +4,13 @@ import { useState } from 'react';
 import QRCode from 'react-qr-code';
 import { useTheme } from '@/components/theme/ThemeProvider';
 
+// Helper function to truncate addresses/txids for display (first 5 + last 5 chars)
+export const truncateAddress = (address: string, prefixLen = 5, suffixLen = 5): string => {
+  if (!address) return '';
+  if (address.length <= prefixLen + suffixLen + 3) return address;
+  return `${address.slice(0, prefixLen)}...${address.slice(-suffixLen)}`;
+};
+
 // Type for a message
 type Message = {
   id: string;
@@ -32,6 +39,7 @@ type ChatSidebarProps = {
   currentUser: { id: number; username: string } | null;
   walletInitialized: boolean;
   currentUserAddress?: string;
+  walletBalance?: string; // Balance in ZEC (e.g., "0.0007")
   onShowSeed: () => void;
   seedBackedUp: boolean;
   onSeedBackedUp: () => void;
@@ -41,6 +49,9 @@ type ChatSidebarProps = {
   onRegenerateAndNotify: () => void;
   walletActionStatus?: string;
   isComposingNewChat: boolean;
+  onUpdate?: () => Promise<void>; // Callback to refresh messages and balance
+  isUpdating?: boolean; // Whether update is in progress
+  lastSyncStatus?: string; // Last sync status message (e.g., "Auto-synced to 3162331 at 18:45")
 };
 
 /**
@@ -57,6 +68,7 @@ export default function ChatSidebar({
   currentUser,
   walletInitialized,
   currentUserAddress,
+  walletBalance,
   onShowSeed,
   seedBackedUp,
   onSeedBackedUp,
@@ -66,8 +78,12 @@ export default function ChatSidebar({
   onRegenerateAndNotify,
   walletActionStatus,
   isComposingNewChat,
+  onUpdate,
+  isUpdating,
+  lastSyncStatus,
 }: ChatSidebarProps) {
   const [copied, setCopied] = useState(false);
+  const [showFullAddress, setShowFullAddress] = useState(false);
   const { theme } = useTheme();
   // Helper function to format timestamp for chat preview
   const formatTime = (timestamp?: number): string => {
@@ -88,11 +104,6 @@ export default function ChatSidebar({
     }
   };
 
-  // Truncate address for display
-  const truncateAddress = (address: string): string => {
-    if (address.length <= 12) return address;
-    return `${address.slice(0, 6)}...${address.slice(-6)}`;
-  };
 
   // Handle copy address to clipboard
   const handleCopyAddress = async () => {
@@ -125,36 +136,88 @@ export default function ChatSidebar({
               <div className="text-sm font-medium text-slate-900 dark:text-slate-100">{currentUser.username}</div>
             </div>
 
-            {/* Wallet address */}
+            {/* Wallet address and balance */}
             {currentUserAddress ? (
-              <div className="bg-white dark:bg-slate-900 rounded-lg p-3 shadow-sm border border-slate-200 dark:border-slate-700 space-y-3">
-                <div className="text-xs text-slate-500 dark:text-slate-400 mb-2">Wallet address</div>
-                
-                {/* Address with copy button */}
-                <div className="space-y-2">
-                  <div className="flex items-start gap-2">
-                    <div className="flex-1 font-mono text-xs break-all text-slate-900 dark:text-slate-100">
-                      {currentUserAddress}
-                    </div>
-                    <button
-                      onClick={handleCopyAddress}
-                      className="flex-shrink-0 px-2 py-1 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded transition-colors"
-                    >
-                      {copied ? 'Copied!' : 'Copy'}
-                    </button>
+              <div className="bg-white dark:bg-slate-900 rounded-lg p-3 shadow-sm border border-slate-200 dark:border-slate-700">
+                {/* Balance display */}
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Balance</div>
+                  <div className="font-mono text-sm font-medium text-green-600 dark:text-green-400">
+                    {walletBalance || '...'} ZEC
                   </div>
                 </div>
 
-                {/* QR Code */}
-                <div className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg flex items-center justify-center">
-                  <QRCode
-                    value={currentUserAddress}
-                    size={128}
-                    level="M"
-                    bgColor={theme === 'dark' ? '#0f172a' : '#f1f5f9'}
-                    fgColor={theme === 'dark' ? '#e2e8f0' : '#0f172a'}
-                  />
+                {/* Collapsed view - truncated address with expand button */}
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-slate-500 dark:text-slate-400">Address</div>
+                  <button
+                    onClick={() => setShowFullAddress(!showFullAddress)}
+                    className="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 transition-colors"
+                  >
+                    {showFullAddress ? 'Collapse' : 'Expand'}
+                  </button>
                 </div>
+
+                {/* Truncated address with copy button */}
+                <div className="flex items-center gap-2 mt-1">
+                  <div className="flex-1 font-mono text-sm text-slate-900 dark:text-slate-100">
+                    {truncateAddress(currentUserAddress)}
+                  </div>
+                  <button
+                    onClick={handleCopyAddress}
+                    className="flex-shrink-0 px-2 py-1 text-xs bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded transition-colors"
+                  >
+                    {copied ? 'Copied!' : 'Copy'}
+                  </button>
+                </div>
+
+                {/* Update button */}
+                {onUpdate && (
+                  <button
+                    onClick={onUpdate}
+                    disabled={isUpdating}
+                    className="w-full mt-3 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded transition-colors flex items-center justify-center gap-2"
+                  >
+                    {isUpdating ? (
+                      <>
+                        <span className="animate-spin">⟳</span>
+                        Syncing...
+                      </>
+                    ) : (
+                      <>
+                        ⟳ Update
+                      </>
+                    )}
+                  </button>
+                )}
+
+                {/* Last sync status */}
+                {lastSyncStatus && (
+                  <div className="mt-2 text-xs text-slate-500 dark:text-slate-400 text-center">
+                    {lastSyncStatus}
+                  </div>
+                )}
+
+                {/* Expanded view - full address and QR code */}
+                {showFullAddress && (
+                  <div className="mt-3 space-y-3 pt-3 border-t border-slate-200 dark:border-slate-700">
+                    {/* Full address */}
+                    <div className="font-mono text-xs break-all text-slate-700 dark:text-slate-300 bg-slate-50 dark:bg-slate-800 p-2 rounded">
+                      {currentUserAddress}
+                    </div>
+
+                    {/* QR Code */}
+                    <div className="bg-slate-100 dark:bg-slate-800 p-3 rounded-lg flex items-center justify-center">
+                      <QRCode
+                        value={currentUserAddress}
+                        size={128}
+                        level="M"
+                        bgColor={theme === 'dark' ? '#0f172a' : '#f1f5f9'}
+                        fgColor={theme === 'dark' ? '#e2e8f0' : '#0f172a'}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             ) : walletInitialized ? (
               <div className="bg-white dark:bg-slate-900 rounded-lg p-3 shadow-sm border border-slate-200 dark:border-slate-700">

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { broadcastTransaction, getAuthToken } from '@/lib/api';
+import { sendMessage as apiSendMessage, getAuthToken } from '@/lib/api';
+import { truncateAddress } from './ChatSidebar';
 
 // Type for a message
 type Message = {
@@ -13,6 +14,7 @@ type Message = {
   text: string;
   type?: string; // Message type: "rotation" for rotation messages
   new_address?: string; // New address (for rotation messages)
+  incoming?: boolean; // True if we received this message, false if we sent it
 };
 
 // Type for a conversation
@@ -129,9 +131,10 @@ export default function ChatWindow({
       return;
     }
 
-    // Check if wallet core is available
-    if (!walletCore) {
-      setSendStatus({ type: 'error', message: 'Wallet not loaded. Please wait...' });
+    // Get auth token from localStorage
+    const token = getAuthToken();
+    if (!token) {
+      setSendStatus({ type: 'error', message: 'Not authenticated. Please log in again.' });
       return;
     }
 
@@ -139,86 +142,45 @@ export default function ChatWindow({
     setSendStatus(null);
 
     try {
-      // Step 1: Call WASM function to build and sign the transaction
-      const wasmResult = walletCore.send_message_dm(toAddress, messageInput.trim());
+      // Use backend API to send message (builds tx, broadcasts, returns txid)
+      // Amount is 10000 zatoshis (0.0001 ZEC) - minimum for message
+      const result = await apiSendMessage(token, toAddress, 10000, messageInput.trim());
 
-      // Parse the result (it's a JsValue, should be a JS object)
-      let parsedResult: any;
-      if (typeof wasmResult === 'string') {
-        parsedResult = JSON.parse(wasmResult);
-      } else {
-        parsedResult = wasmResult;
+      // Success! Show success message
+      setSendStatus({
+        type: 'success',
+        message: `Message sent! TXID: ${truncateAddress(result.txid)}`
+      });
+
+      // Optionally add message to local state (pending status)
+      if (onMessageSent) {
+        const pendingMessage: Message = {
+          id: `pending-${Date.now()}`,
+          txid: result.txid,
+          from_address: currentUserAddress ?? null,
+          to_address: toAddress,
+          timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp
+          text: messageInput.trim(),
+          incoming: false, // We sent this message
+        };
+        onMessageSent(pendingMessage);
       }
 
-      // Check for error from WASM
-      if (parsedResult.error) {
-        setSendStatus({ type: 'error', message: `Failed to create transaction: ${parsedResult.error}` });
-        setIsSending(false);
-        return;
+      // Clear the input
+      setMessageInput('');
+      if (isNewChat && onNewChatCreated) {
+        onNewChatCreated(toAddress);
       }
 
-      // Step 2: If we have txHex and txid, broadcast it
-      if (parsedResult.txHex && parsedResult.txid) {
-        // Get auth token from localStorage (same key used by login/register)
-        const token = getAuthToken();
-        if (!token) {
-          setSendStatus({ type: 'error', message: 'Not authenticated. Please log in again.' });
-          setIsSending(false);
-          return;
-        }
-
-        try {
-          // Call backend to broadcast the transaction
-          const broadcastResult = await broadcastTransaction(token, parsedResult.txHex);
-          
-          // Success! Show success message
-          setSendStatus({ 
-            type: 'success', 
-            message: `Message sent! TXID: ${broadcastResult.txid}` 
-          });
-
-          // Optionally add message to local state (pending status)
-          if (onMessageSent) {
-            const pendingMessage: Message = {
-              id: `pending-${Date.now()}`,
-              txid: broadcastResult.txid,
-              from_address: currentUserAddress ?? null,
-              to_address: toAddress,
-              timestamp: Math.floor(Date.now() / 1000), // Current Unix timestamp
-              text: messageInput.trim(),
-            };
-            onMessageSent(pendingMessage);
-          }
-
-          // Clear the input
-          setMessageInput('');
-          if (isNewChat && onNewChatCreated) {
-            onNewChatCreated(toAddress);
-          }
-          
-          // Clear status message after 5 seconds
-          setTimeout(() => {
-            setSendStatus(null);
-          }, 5000);
-        } catch (broadcastError: any) {
-          // Broadcast failed
-          setSendStatus({ 
-            type: 'error', 
-            message: `Transaction created but broadcast failed: ${broadcastError.message || String(broadcastError)}` 
-          });
-        }
-      } else {
-        // Unexpected response format
-        setSendStatus({ 
-          type: 'error', 
-          message: 'Unexpected response from wallet. Missing txHex or txid.' 
-        });
-      }
+      // Clear status message after 5 seconds
+      setTimeout(() => {
+        setSendStatus(null);
+      }, 5000);
     } catch (error: any) {
-      // Error creating transaction
-      setSendStatus({ 
-        type: 'error', 
-        message: `Failed to send message: ${error.message || String(error)}` 
+      // Error sending message
+      setSendStatus({
+        type: 'error',
+        message: `Failed to send message: ${error.message || String(error)}`
       });
     } finally {
       setIsSending(false);
@@ -249,8 +211,11 @@ export default function ChatWindow({
           </div>
         ) : (
           <div>
-            <div className="font-medium text-slate-900 dark:text-slate-100">
-              {selectedPeerAddress}
+            <div
+              className="font-medium text-slate-900 dark:text-slate-100 cursor-help"
+              title={selectedPeerAddress || ''}
+            >
+              {truncateAddress(selectedPeerAddress || '')}
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 mt-1">
               {chatMessages.length} message{chatMessages.length !== 1 ? 's' : ''}
@@ -270,8 +235,12 @@ export default function ChatWindow({
         ) : (
           chatMessages.map((msg) => {
             // Determine if message is from current user
-            // If from_address is missing/null/undefined or matches currentUserAddress, it's from us
-            const isFromMe = !msg.from_address || msg.from_address === currentUserAddress;
+            // Use the `incoming` flag if available (from backend)
+            // If incoming=false, message is from us (we sent it)
+            // If incoming=true, message is from the peer (we received it)
+            const isFromMe = msg.incoming !== undefined
+              ? !msg.incoming  // incoming=false means we sent it
+              : (msg.from_address === currentUserAddress);  // Fallback: check from_address
             const isRotation = msg.type === 'rotation';
             
             return (

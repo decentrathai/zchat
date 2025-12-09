@@ -35,3 +35,17 @@ pnpm-debug.log*
 Thumbs.db
 .idea/
 .vscode/
+
+# Wallet data (sensitive)
+wallet-db/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Development docs/notes
+*.md
+!README.md
+
+# Screenshots and temp files
+screenshot.png

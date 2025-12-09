@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { register, login, linkWalletAddress, broadcastTransaction, getAuthToken } from '@/lib/api';
+import { register, login, linkWalletAddress, broadcastTransaction, getAuthToken, getWalletAddress, getWalletBalance, syncWallet as apiSyncWallet, getMessages as apiGetMessages } from '@/lib/api';
 import ChatSidebar from '@/components/ChatSidebar';
 import ChatWindow from '@/components/ChatWindow';
 import DeveloperTools from '@/components/DeveloperTools';
@@ -26,12 +26,13 @@ type WalletCore = {
 type Message = {
   id: string;
   txid: string;
-  from_address?: string; // Optional in WASM response
-  to_address: string;
+  from_address?: string; // Sender's address (from ZMSGv2 memo or our address for outgoing)
+  to_address: string;    // Recipient's address
   timestamp: number;
   text: string;
   type?: string; // Message type: "rotation" for rotation messages
   new_address?: string; // New address (for rotation messages)
+  incoming?: boolean; // True if we received this message, false if we sent it
 };
 
 // Type for a conversation (grouped by peer address)
@@ -80,6 +81,7 @@ export default function Home() {
   const [syncResult, setSyncResult] = useState<string>('');
   const [balance, setBalance] = useState<string>('');
   const [walletActionStatus, setWalletActionStatus] = useState<string>('');
+  const [isUpdating, setIsUpdating] = useState<boolean>(false);
 
   // Load wallet WASM module on mount
   useEffect(() => {
@@ -102,18 +104,45 @@ export default function Home() {
           setNetworkName('unknown');
         }
 
-        // Check if wallet is already initialized
-        const initialized = localStorage.getItem('walletInitialized');
-        if (initialized === 'true') {
-          setWalletInitialized(true);
-          // Get current user's address
+        // Check if user is already logged in (has token)
+        const token = getAuthToken();
+        if (token) {
+          // Try to restore session from backend
           try {
-            const address = wasmModule.get_primary_address();
-            if (!address.startsWith('error:')) {
-              setCurrentUserAddress(address);
+            const walletResponse = await getWalletAddress(token);
+            setCurrentUserAddress(walletResponse.address);
+            setWalletInitialized(true);
+
+            // Load balance
+            try {
+              const balanceResult = await getWalletBalance(token);
+              const balanceZatoshis = balanceResult.balance_zatoshis;
+              const balanceZEC = (balanceZatoshis / 100_000_000).toFixed(4);
+              setBalance(balanceZEC);
+            } catch (balanceError) {
+              console.error('Failed to get balance:', balanceError);
             }
+
+            // Also load messages
+            const messagesResult = await apiGetMessages(token);
+            const transformedMessages: Message[] = messagesResult.messages.map((msg: any) => ({
+              id: msg.txid,
+              txid: msg.txid,
+              // Use from_address from backend if available, otherwise infer from incoming flag
+              from_address: msg.from_address || (msg.incoming ? undefined : walletResponse.address),
+              // Use to_address from backend if available, otherwise infer from incoming flag
+              to_address: msg.to_address || (msg.incoming ? walletResponse.address : ''),
+              timestamp: msg.timestamp,
+              text: msg.memo || '',
+              type: msg.type,
+              new_address: msg.new_address,
+              incoming: msg.incoming, // Pass through incoming flag for display purposes
+            }));
+            setMessages(transformedMessages);
           } catch (e) {
-            console.error('Failed to get primary address:', e);
+            console.error('Failed to restore session from backend:', e);
+            // Clear invalid token
+            localStorage.removeItem('authToken');
           }
         }
 
@@ -171,29 +200,40 @@ export default function Home() {
     };
 
     // Group messages by peer address (using original addresses for grouping)
+    // A "peer" is the other party in the conversation:
+    // - For outgoing messages (incoming=false): peer is the recipient (to_address)
+    // - For incoming messages (incoming=true): peer is the sender (from_address)
     const conversationMap = new Map<string, Message[]>();
 
     messages.forEach((msg) => {
-      // Determine the peer address (the other party)
+      // Determine the peer address (the other party in this message)
       let peerAddress: string;
-      
-      if (msg.to_address === currentUserAddress) {
+
+      // Use the incoming flag if available (from backend)
+      // Otherwise fall back to checking if to_address matches our address
+      const isIncoming = msg.incoming !== undefined
+        ? msg.incoming
+        : (msg.to_address === currentUserAddress);
+
+      if (isIncoming) {
         // Message was sent TO us, so peer is the sender
-        peerAddress = msg.from_address || 'unknown';
+        // Use from_address if available (ZMSGv2 format), otherwise mark as unknown
+        peerAddress = msg.from_address || 'unknown_sender';
       } else {
         // Message was sent FROM us, so peer is the recipient
         peerAddress = msg.to_address;
       }
 
-      // Use original peer address for grouping (before rotation)
-      // This keeps all messages in the same conversation even after rotation
-      const originalPeerAddress = peerAddress;
+      // Skip messages with empty peer address
+      if (!peerAddress || peerAddress === '') {
+        return;
+      }
 
       // Add message to the conversation for this peer
-      if (!conversationMap.has(originalPeerAddress)) {
-        conversationMap.set(originalPeerAddress, []);
+      if (!conversationMap.has(peerAddress)) {
+        conversationMap.set(peerAddress, []);
       }
-      conversationMap.get(originalPeerAddress)!.push(msg);
+      conversationMap.get(peerAddress)!.push(msg);
     });
 
     // Build conversations array with last message
@@ -201,7 +241,7 @@ export default function Home() {
       ([originalPeerAddress, peerMessages]) => {
         // Sort messages by timestamp (oldest first)
         const sortedMessages = [...peerMessages].sort((a, b) => a.timestamp - b.timestamp);
-        
+
         // Get the last (most recent) message
         const lastMessage = sortedMessages[sortedMessages.length - 1];
 
@@ -280,20 +320,27 @@ export default function Home() {
       const loginResponse = await login(username, password);
       localStorage.setItem('authToken', loginResponse.token);
 
-      // Check if wallet is initialized and link address if available
-      if (walletCore && walletInitialized) {
-        try {
-          const address = walletCore.get_primary_address();
-          if (!address.startsWith('error:')) {
-            setCurrentUserAddress(address);
-            await linkWalletAddress(loginResponse.token, address);
-            setAuthMessage(`Logged in as ${loginResponse.user.username}. Wallet address linked to account.`);
-          }
-        } catch (error: any) {
-          setAuthMessage(`Logged in as ${loginResponse.user.username}, but failed to link address: ${error.message}`);
-        }
-      } else {
+      // Fetch wallet address from backend API (not WASM)
+      try {
+        const walletResponse = await getWalletAddress(loginResponse.token);
+        setCurrentUserAddress(walletResponse.address);
+        setWalletInitialized(true);
         setAuthMessage(`Logged in as ${loginResponse.user.username}`);
+
+        // Load balance
+        try {
+          const balanceResult = await getWalletBalance(loginResponse.token);
+          const balanceZatoshis = balanceResult.balance_zatoshis;
+          const balanceZEC = (balanceZatoshis / 100_000_000).toFixed(4);
+          setBalance(balanceZEC);
+        } catch (balanceError) {
+          console.error('Failed to get balance on login:', balanceError);
+        }
+
+        // Load messages from backend (pass address since state update is async)
+        await loadMessagesFromBackend(loginResponse.token, walletResponse.address);
+      } catch (error: any) {
+        setAuthMessage(`Logged in as ${loginResponse.user.username}, but failed to get wallet: ${error.message}`);
       }
 
       setCurrentUser(loginResponse.user);
@@ -593,124 +640,164 @@ export default function Home() {
     }
   };
 
-  // Wallet operation handlers
-  const handleSyncWallet = () => {
-    if (!walletCore) {
-      setSyncResult('error: Wallet core not loaded');
+  // Helper function to load messages from backend API
+  const loadMessagesFromBackend = async (token: string, userAddress?: string) => {
+    try {
+      const result = await apiGetMessages(token);
+      const myAddress = userAddress || currentUserAddress;
+      // Transform backend messages to frontend format
+      const transformedMessages: Message[] = result.messages.map((msg: any) => ({
+        id: msg.txid,
+        txid: msg.txid,
+        from_address: msg.incoming ? undefined : myAddress, // If incoming, sender is unknown (peer)
+        to_address: msg.incoming ? myAddress : (msg.to_address || ''),
+        timestamp: msg.timestamp,
+        text: msg.memo || '',
+        type: msg.type,
+        new_address: msg.new_address,
+      }));
+      setMessages(transformedMessages);
+      setSyncResult('');
+    } catch (error: any) {
+      console.error('Failed to load messages:', error);
+      setSyncResult(`error: ${error.message || String(error)}`);
+    }
+  };
+
+  // Wallet operation handlers - using backend API
+  const handleSyncWallet = async () => {
+    const token = getAuthToken();
+    if (!token) {
+      setSyncResult('error: Not authenticated');
       return;
     }
 
     try {
-      const result = walletCore.sync_wallet();
-      setSyncResult(result);
+      setSyncResult('Syncing...');
+      const result = await apiSyncWallet(token);
+      setSyncResult(`Synced to height ${result.synced_to_height}`);
+      // Reload messages after sync
+      await loadMessagesFromBackend(token);
     } catch (error: any) {
       setSyncResult(`error: ${error.message || String(error)}`);
     }
   };
 
-  const handleGetBalance = () => {
-    if (!walletCore) {
-      setBalance('error: Wallet core not loaded');
+  const handleGetBalance = async () => {
+    const token = getAuthToken();
+    if (!token) {
+      setBalance('error: Not authenticated');
       return;
     }
 
     try {
-      const balanceStr = walletCore.get_balance();
-
-      if (balanceStr.startsWith('error:')) {
-        setBalance(balanceStr);
-        return;
-      }
-
-      const balanceZatoshis = parseInt(balanceStr, 10);
+      const result = await getWalletBalance(token);
+      const balanceZatoshis = result.balance_zatoshis;
       const balanceZEC = balanceZatoshis / 100_000_000;
-
       setBalance(`${balanceZatoshis.toLocaleString()} zatoshis (${balanceZEC.toFixed(8)} ZEC)`);
     } catch (error: any) {
       setBalance(`error: ${error.message || String(error)}`);
     }
   };
 
-  // Load messages from wallet
-  const handleLoadMessages = () => {
-    if (!walletCore) {
+  // Load messages from backend
+  const handleLoadMessages = async () => {
+    const token = getAuthToken();
+    if (!token) {
       setMessages([]);
-      setSyncResult('error: Wallet core not loaded');
+      setSyncResult('error: Not authenticated');
       return;
     }
 
+    await loadMessagesFromBackend(token);
+  };
+
+  // Combined update handler - syncs wallet, updates balance, and reloads messages
+  const handleUpdate = async () => {
+    const token = getAuthToken();
+    if (!token) {
+      setSyncResult('error: Not authenticated');
+      return;
+    }
+
+    setIsUpdating(true);
     try {
-      // Call WASM function to get messages
-      const result = walletCore.list_messages();
+      // Step 1: Sync wallet to get latest blockchain data
+      const syncResult = await apiSyncWallet(token);
+      setSyncResult(`Synced to height ${syncResult.synced_to_height}`);
 
-      // Check if result is an error object
-      if (result && typeof result === 'object' && !Array.isArray(result) && 'error' in result) {
-        setMessages([]);
-        setSyncResult(`error: ${(result as any).error}`);
-        return;
-      }
+      // Step 2: Get updated balance
+      const balanceResult = await getWalletBalance(token);
+      const balanceZatoshis = balanceResult.balance_zatoshis;
+      const balanceZEC = (balanceZatoshis / 100_000_000).toFixed(4);
+      setBalance(balanceZEC);
 
-      // Parse the result (should be an array of messages)
-      let messagesArray: Message[];
-      if (Array.isArray(result)) {
-        messagesArray = result as Message[];
-      } else if (typeof result === 'string') {
-        // Try to parse as JSON string
-        const parsed = JSON.parse(result);
-        if (Array.isArray(parsed)) {
-          messagesArray = parsed as Message[];
-        } else {
-          setMessages([]);
-          setSyncResult('error: Unexpected result format from list_messages');
-          return;
-        }
-      } else {
-        setMessages([]);
-        setSyncResult('error: Unexpected result format from list_messages');
-        return;
-      }
-
-      // Store messages in state (conversations will be derived automatically via useEffect)
-      setMessages(messagesArray);
-      setSyncResult('');
+      // Step 3: Reload messages
+      await loadMessagesFromBackend(token, currentUserAddress);
     } catch (error: any) {
-      setMessages([]);
       setSyncResult(`error: ${error.message || String(error)}`);
+    } finally {
+      setIsUpdating(false);
     }
   };
 
-  // Load messages on mount if wallet is initialized
+  // Load messages on mount if wallet is initialized (using backend API)
   useEffect(() => {
-    if (walletCore && walletInitialized && currentUserAddress) {
-      // Load messages when wallet is ready
-      try {
-        const result = walletCore.list_messages();
-
-        if (result && typeof result === 'object' && !Array.isArray(result) && 'error' in result) {
-          console.error('Failed to load messages:', (result as any).error);
-          return;
-        }
-
-        let messagesArray: Message[];
-        if (Array.isArray(result)) {
-          messagesArray = result as Message[];
-        } else if (typeof result === 'string') {
-          const parsed = JSON.parse(result);
-          if (Array.isArray(parsed)) {
-            messagesArray = parsed as Message[];
-          } else {
-            return;
-          }
-        } else {
-          return;
-        }
-
-        setMessages(messagesArray);
-      } catch (error) {
-        console.error('Failed to load messages on mount:', error);
+    if (walletInitialized && currentUserAddress) {
+      const token = getAuthToken();
+      if (token) {
+        loadMessagesFromBackend(token);
       }
     }
-  }, [walletCore, walletInitialized, currentUserAddress]);
+  }, [walletInitialized, currentUserAddress]);
+
+  // Auto-update interval (every 75 seconds - approximately one Zcash block)
+  useEffect(() => {
+    // Only run auto-update when user is logged in and wallet is initialized
+    if (!currentUser || !walletInitialized || !currentUserAddress) {
+      return;
+    }
+
+    const AUTO_UPDATE_INTERVAL = 75 * 1000; // 75 seconds in milliseconds
+
+    const runAutoUpdate = async () => {
+      const token = getAuthToken();
+      if (!token) return;
+
+      // Don't run if a manual update is in progress
+      if (isUpdating) return;
+
+      try {
+        // Sync wallet silently (no UI state changes except on error)
+        const syncResult = await apiSyncWallet(token);
+
+        // Update balance
+        const balanceResult = await getWalletBalance(token);
+        const balanceZatoshis = balanceResult.balance_zatoshis;
+        const balanceZEC = (balanceZatoshis / 100_000_000).toFixed(4);
+        setBalance(balanceZEC);
+
+        // Reload messages
+        await loadMessagesFromBackend(token, currentUserAddress);
+
+        // Update sync result with timestamp
+        const now = new Date();
+        const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        setSyncResult(`Auto-synced to ${syncResult.synced_to_height} at ${timeStr}`);
+      } catch (error: any) {
+        console.error('Auto-update failed:', error);
+        // Don't show error in UI for auto-updates to avoid spamming
+      }
+    };
+
+    // Set up the interval
+    const intervalId = setInterval(runAutoUpdate, AUTO_UPDATE_INTERVAL);
+
+    // Cleanup on unmount or when dependencies change
+    return () => {
+      clearInterval(intervalId);
+    };
+  }, [currentUser, walletInitialized, currentUserAddress, isUpdating]);
 
   // Loading state
   if (isLoading) {
@@ -816,6 +903,7 @@ export default function Home() {
               currentUser={currentUser}
               walletInitialized={walletInitialized}
               currentUserAddress={currentUserAddress}
+              walletBalance={balance}
               onShowSeed={handleShowSeed}
               seedBackedUp={seedBackedUp}
               onSeedBackedUp={handleSeedBackedUp}
@@ -825,6 +913,9 @@ export default function Home() {
               onRegenerateAndNotify={handleRegenerateAndNotify}
               walletActionStatus={walletActionStatus}
               isComposingNewChat={isComposingNewChat}
+              onUpdate={handleUpdate}
+              isUpdating={isUpdating}
+              lastSyncStatus={syncResult}
             />
           </div>
 

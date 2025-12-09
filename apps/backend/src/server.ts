@@ -4,6 +4,8 @@ import cors from '@fastify/cors';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
+import * as wallet from './wallet';
+import { syncWallet, sendTransaction, getMessages } from './wallet';
 
 // JWT Secret - use environment variable or fallback to dev secret (ONLY FOR DEVELOPMENT)
 const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
@@ -336,6 +338,134 @@ server.get('/zcash/network-info', async (request, reply) => {
     server.log.error({ error: error.message }, 'Failed to fetch Zcash network info');
     reply.code(500);
     return { error: error.message || 'Failed to fetch Zcash network info' };
+  }
+});
+
+// Wallet routes
+server.get('/wallet/address', async (request, reply) => {
+  await authenticate(request, reply);
+  if (!request.user) {
+    reply.code(401);
+    return { error: 'Unauthorized' };
+  }
+  try {
+    const address = await wallet.getPrimaryAddress();
+    return { address };
+  } catch (error: any) {
+    server.log.error({ error: error.message }, 'Failed to get wallet address');
+    reply.code(500);
+    return { error: error.message || 'Failed to get wallet address' };
+  }
+});
+
+server.get('/wallet/balance', async (request, reply) => {
+  await authenticate(request, reply);
+  if (!request.user) {
+    reply.code(401);
+    return { error: 'Unauthorized' };
+  }
+  try {
+    const balance = await wallet.getBalance();
+    return { balance_zatoshis: balance };
+  } catch (error: any) {
+    server.log.error({ error: error.message }, 'Failed to get wallet balance');
+    reply.code(500);
+    return { error: error.message || 'Failed to get wallet balance' };
+  }
+});
+
+server.post('/wallet/sync', async (request, reply) => {
+  await authenticate(request, reply);
+  if (!request.user) {
+    reply.code(401);
+    return { error: 'Unauthorized' };
+  }
+  try {
+    const result = await syncWallet();
+    return result;
+  } catch (error: any) {
+    server.log.error({ error: error.message }, 'Failed to sync wallet');
+    reply.code(500);
+    return { error: error.message || 'Failed to sync wallet' };
+  }
+});
+
+server.get('/messages', async (request, reply) => {
+  await authenticate(request, reply);
+  if (!request.user) {
+    reply.code(401);
+    return { error: 'Unauthorized' };
+  }
+  try {
+    const sinceHeight = request.query && typeof (request.query as any).sinceHeight === 'string' 
+      ? parseInt((request.query as any).sinceHeight, 10) 
+      : undefined;
+    const result = await getMessages(sinceHeight);
+    return result;
+  } catch (error: any) {
+    server.log.error({ error: error.message }, 'Failed to get messages');
+    reply.code(500);
+    return { error: error.message || 'Failed to get messages' };
+  }
+});
+
+/**
+ * Send a Zcash transaction using the wallet
+ * 
+ * POST /wallet/send
+ * Body: { to: string, amount: number, memo: string }
+ * 
+ * This endpoint:
+ * 1. Requires JWT authentication
+ * 2. Builds a transaction using wallet-core
+ * 3. Broadcasts it via the existing /zcash/broadcast endpoint
+ * 4. Returns the transaction ID
+ */
+server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/send', async (request, reply) => {
+  // Require authentication
+  await authenticate(request, reply);
+
+  // User is attached to request by authenticate middleware
+  if (!request.user) {
+    reply.code(401);
+    return { error: 'Unauthorized' };
+  }
+
+  const { to, amount, memo } = request.body;
+
+  // Validate input
+  if (!to || typeof to !== 'string') {
+    reply.code(400);
+    return { error: 'to address is required and must be a string' };
+  }
+
+  if (typeof amount !== 'number' || amount <= 0) {
+    reply.code(400);
+    return { error: 'amount is required and must be a positive number (in zatoshis)' };
+  }
+
+  if (typeof memo !== 'string') {
+    reply.code(400);
+    return { error: 'memo must be a string' };
+  }
+
+  try {
+    // Step 1: Build the transaction using wallet-core
+    const { txHex, txid } = await wallet.buildTransaction(to, amount, memo);
+
+    // Step 2: Broadcast the transaction
+    // We'll call the existing broadcast endpoint logic
+    const broadcastTxid = await callZcashRPC<string>('sendrawtransaction', [txHex]);
+
+    // Return the transaction ID
+    return { txid: broadcastTxid || txid };
+  } catch (error: any) {
+    // Log the error for debugging
+    server.log.error({ error: error.message }, 'Failed to send transaction');
+
+    // Return error response
+    reply.code(500);
+    return { error: error.message || 'Failed to send transaction' };
   }
 });
 

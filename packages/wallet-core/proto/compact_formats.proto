@@ -1,0 +1,72 @@
+syntax = "proto3";
+
+package cash.z.wallet.sdk.rpc;
+
+option go_package = "github.com/zcash/lightwalletd/common";
+
+// Information about the state of the chain as of a given block.
+message ChainMetadata {
+  // the size of the Sapling note commitment tree as of the end of this block
+  uint32 sapling_commitment_tree_size = 1;
+  // the size of the Orchard note commitment tree as of the end of this block
+  uint32 orchard_commitment_tree_size = 2;
+}
+
+// Compact block format for efficient transmission
+message CompactBlock {
+  uint32 proto_version = 1;
+  uint64 height = 2;
+  bytes hash = 3;
+  bytes prev_hash = 4;
+  uint32 time = 5;
+  // (hash, prevHash, and time) OR (full header)
+  bytes header = 6;
+  // zero or more compact transactions from this block
+  repeated CompactTx vtx = 7;
+  // information about the state of the chain as of this block
+  ChainMetadata chain_metadata = 8;
+}
+
+// A compact representation of the shielded data in a Zcash transaction.
+message CompactTx {
+  // the index within the full block
+  uint64 index = 1;
+  // the ID (hash) of this transaction, same as in block explorers
+  bytes hash = 2;
+  // The transaction fee: present if server can provide
+  uint32 fee = 3;
+  // Sapling spends
+  repeated CompactSaplingSpend spends = 4;
+  // Sapling outputs
+  repeated CompactSaplingOutput outputs = 5;
+  // Orchard actions
+  repeated CompactOrchardAction actions = 6;
+}
+
+// A compact representation of a Sapling Spend.
+message CompactSaplingSpend {
+  // Nullifier
+  bytes nf = 1;
+}
+
+// A compact representation of a Sapling Output.
+message CompactSaplingOutput {
+  // Note commitment u-coordinate
+  bytes cmu = 1;
+  // Ephemeral public key
+  bytes epk = 2;
+  // First 52 bytes of ciphertext
+  bytes ciphertext = 3;
+}
+
+// A compact representation of an Orchard Action.
+message CompactOrchardAction {
+  // Nullifier
+  bytes nullifier = 1;
+  // Note commitment
+  bytes cmx = 2;
+  // Ephemeral public key
+  bytes ephemeral_key = 3;
+  // First 52 bytes of ciphertext
+  bytes ciphertext = 4;
+}
