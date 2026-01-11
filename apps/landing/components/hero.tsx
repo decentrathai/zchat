@@ -2,11 +2,17 @@
 
 import { Button } from "@/components/ui/button"
 import Image from "next/image"
-import Link from "next/link"
 
 export function Hero() {
   const scrollToVideo = () => {
     const element = document.getElementById("demo-video")
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth" })
+    }
+  }
+
+  const scrollToDownload = () => {
+    const element = document.getElementById("download")
     if (element) {
       element.scrollIntoView({ behavior: "smooth" })
     }
@@ -26,7 +32,7 @@ export function Hero() {
           {/* Left content */}
           <div className="space-y-8">
             <div className="inline-block rounded-full border border-cyan-500/30 bg-cyan-500/10 px-4 py-1.5 text-sm text-cyan-300">
-              Internal testing · 2025
+              Now in Private Beta · 2026
             </div>
 
             <h1 className="text-balance text-5xl font-bold leading-tight text-white lg:text-6xl xl:text-7xl">
@@ -34,45 +40,54 @@ export function Hero() {
             </h1>
 
             <p className="text-pretty text-lg leading-relaxed text-gray-300 lg:text-xl">
-              Every message is a shielded ZEC transaction memo. No centralized chat server. No metadata leaks. Just log
-              in to the app and experience truly private communication.
+              Every message is a shielded ZEC transaction memo. No centralized chat server. No metadata leaks.
+              No sign-up required. Just download the app and experience truly private communication.
             </p>
 
             <div className="flex flex-col gap-4 sm:flex-row">
               <Button
-                onClick={scrollToVideo}
+                onClick={scrollToDownload}
                 size="lg"
                 className="bg-white text-black transition-all hover:bg-gray-100 hover:shadow-[0_0_30px_rgba(255,255,255,0.3)]"
               >
-                Watch 2-minute demo
+                Get Early Access
               </Button>
               <Button
-                asChild
+                onClick={scrollToVideo}
                 size="lg"
                 variant="outline"
                 className="border-cyan-500/50 bg-cyan-500/10 text-cyan-300 transition-all hover:border-cyan-500 hover:bg-cyan-500/20 hover:text-cyan-200"
               >
-                <Link href="/coming-soon">Try the Web App</Link>
+                Watch 2-minute demo
               </Button>
             </div>
           </div>
 
-          {/* Right content - App screenshot */}
-          <div className="relative">
-            <div className="relative overflow-hidden rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-magenta-500/10 p-1 shadow-[0_0_50px_rgba(34,211,238,0.3)]">
-              <div className="overflow-hidden rounded-xl">
-                <Image
-                  src="/images/screenshot-202025-12-04-20105859.png"
-                  alt="Zcash Chat application interface"
-                  width={1200}
-                  height={800}
-                  className="w-full"
-                  priority
-                />
+          {/* Right content - Mobile App screenshot */}
+          <div className="relative flex justify-center">
+            {/* Phone frame */}
+            <div className="relative">
+              {/* Phone outer frame */}
+              <div className="relative rounded-[3rem] border-[8px] border-gray-800 bg-gray-900 p-2 shadow-[0_0_60px_rgba(34,211,238,0.4)]">
+                {/* Phone notch */}
+                <div className="absolute left-1/2 top-0 z-10 h-6 w-24 -translate-x-1/2 rounded-b-2xl bg-gray-800" />
+                {/* Screen */}
+                <div className="relative overflow-hidden rounded-[2.2rem] bg-white">
+                  <Image
+                    src="/images/mobile-screenshot.png"
+                    alt="ZCHAT mobile app interface"
+                    width={360}
+                    height={800}
+                    className="w-[280px] lg:w-[320px]"
+                    priority
+                  />
+                </div>
+                {/* Home indicator */}
+                <div className="absolute bottom-3 left-1/2 h-1 w-24 -translate-x-1/2 rounded-full bg-gray-600" />
               </div>
+              {/* Glow effect behind phone */}
+              <div className="absolute -inset-8 -z-10 rounded-[4rem] bg-gradient-to-br from-cyan-500/30 to-magenta-500/20 blur-3xl" />
             </div>
-            {/* Glow effect behind image */}
-            <div className="absolute -inset-4 -z-10 rounded-3xl bg-gradient-to-br from-cyan-500/20 to-magenta-500/20 blur-2xl" />
           </div>
         </div>
       </div>

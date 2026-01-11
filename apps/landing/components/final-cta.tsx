@@ -3,6 +3,13 @@
 import { Button } from "@/components/ui/button"
 
 export function FinalCTA() {
+  const scrollToDownload = () => {
+    const element = document.getElementById("download")
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth" })
+    }
+  }
+
   const scrollToVideo = () => {
     const element = document.getElementById("demo-video")
     if (element) {
@@ -22,16 +29,16 @@ export function FinalCTA() {
               Ready to make messaging actually private?
             </h2>
             <p className="mx-auto mb-8 max-w-2xl text-pretty text-lg text-gray-300">
-              Experience truly private communication powered by Zcash's shielded transactions.
+              Experience truly private communication powered by Zcash&apos;s shielded transactions. No servers. No sign-up. No compromise.
             </p>
 
             <div className="flex flex-col items-center justify-center gap-4 sm:flex-row">
               <Button
-                asChild
+                onClick={scrollToDownload}
                 size="lg"
                 className="bg-cyan-500 text-black transition-all hover:bg-cyan-400 hover:shadow-[0_0_30px_rgba(34,211,238,0.5)]"
               >
-                <a href="/app">Open Web App (alpha)</a>
+                Get Early Access
               </Button>
               <Button
                 onClick={scrollToVideo}

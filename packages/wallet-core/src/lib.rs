@@ -2570,10 +2570,10 @@ pub fn build_rotation_memo(new_address: String) -> String {
     //   const memo = walletCore.build_rotation_memo("u1newaddress...");
     //   console.log("Rotation memo:", memo); // "ZROTv1|u1newaddress...|1234567890"
     // ============================================================
-    
+
     // Create a WalletCore instance
     let wallet = WalletCore::new(LIGHTWALLETD_URL.to_string());
-    
+
     // Build the rotation memo
     match wallet.build_rotation_memo(new_address) {
         Ok((memo_string, _timestamp_string)) => {
@@ -2585,5 +2585,76 @@ pub fn build_rotation_memo(new_address: String) -> String {
             format!("error: {}", e)
         }
     }
+}
+
+// ============================================================
+// CLIENT-SIDE WALLET FUNCTIONS (Work in WASM - no network/file I/O)
+// ============================================================
+
+// Note: bip0039, zcash_keys, and zip32 imports are at the top of the file
+
+/// Generate a new 24-word mnemonic phrase
+/// This runs entirely in the browser - seed never leaves the client
+#[wasm_bindgen]
+pub fn generate_mnemonic() -> String {
+    use rand::RngCore;
+
+    // Generate 32 bytes (256 bits) of random entropy
+    let mut entropy = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut entropy);
+
+    // Create BIP39 mnemonic from entropy
+    match Mnemonic::<English>::from_entropy(&entropy) {
+        Ok(mnemonic) => mnemonic.phrase().to_string(),
+        Err(e) => format!("error: Failed to generate mnemonic: {:?}", e),
+    }
+}
+
+/// Derive a Zcash unified address from a mnemonic phrase
+/// This runs entirely in the browser - seed never leaves the client
+#[wasm_bindgen]
+pub fn derive_address_from_mnemonic(mnemonic_phrase: String, account_index: u32) -> String {
+    // Parse the mnemonic phrase
+    let mnemonic: Mnemonic<English> = match Mnemonic::from_phrase(&mnemonic_phrase) {
+        Ok(m) => m,
+        Err(e) => return format!("error: Invalid mnemonic phrase: {:?}", e),
+    };
+
+    // Derive seed from mnemonic (no passphrase)
+    let seed_bytes = mnemonic.to_seed("");
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&seed_bytes[..32]);
+
+    // Create account ID
+    let account_id = match AccountId::try_from(account_index) {
+        Ok(id) => id,
+        Err(e) => return format!("error: Invalid account index: {:?}", e),
+    };
+
+    // Derive Unified Spending Key from seed
+    use zcash_protocol::consensus::MainNetwork;
+    let usk = match UnifiedSpendingKey::from_seed(&MainNetwork, &seed, account_id) {
+        Ok(key) => key,
+        Err(e) => return format!("error: Failed to derive spending key: {:?}", e),
+    };
+
+    // Get the Unified Full Viewing Key
+    let ufvk = usk.to_unified_full_viewing_key();
+
+    // Generate default unified address (Orchard + Sapling receivers)
+    let request = UnifiedAddressRequest::SHIELDED;
+    match ufvk.default_address(request) {
+        Ok((ua, _diversifier_index)) => {
+            // Encode the address for mainnet
+            ua.encode(&MainNetwork)
+        }
+        Err(e) => format!("error: Failed to generate address: {:?}", e),
+    }
+}
+
+/// Validate a mnemonic phrase (check if it's valid BIP39)
+#[wasm_bindgen]
+pub fn validate_mnemonic(mnemonic_phrase: String) -> bool {
+    Mnemonic::<English>::from_phrase(&mnemonic_phrase).is_ok()
 }
 

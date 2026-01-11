@@ -12,5 +12,10 @@
     "dev:landing": "pnpm --filter @zchat/landing dev",
     "dev:web": "pnpm --filter web dev",
     "dev:backend": "pnpm --filter backend dev"
+  },
+  "pnpm": {
+    "overrides": {
+      "@types/react": "18.3.26"
+    }
   }
 }

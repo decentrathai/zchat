@@ -19,5 +19,27 @@ model User {
   username       String    @unique
   passwordHash   String
   primaryAddress String?
+  walletDbPath   String?   // Per-user wallet database path
   createdAt      DateTime  @default(now())
+}
+
+model Whitelist {
+  id           Int            @id @default(autoincrement())
+  email        String         @unique
+  reason       String         // Why they want to test
+  status       String         @default("pending") // pending, approved, rejected
+  createdAt    DateTime       @default(now())
+  approvedAt   DateTime?
+  downloadCodes DownloadCode[]
+}
+
+model DownloadCode {
+  id          Int       @id @default(autoincrement())
+  code        String    @unique // The secret code user enters
+  whitelistId Int
+  whitelist   Whitelist @relation(fields: [whitelistId], references: [id])
+  used        Boolean   @default(false)
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+  expiresAt   DateTime  // Codes expire after some time
 }

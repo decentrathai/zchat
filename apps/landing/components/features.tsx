@@ -25,7 +25,7 @@ export function Features() {
     <section id="product" className="relative py-20 lg:py-32">
       <div className="container mx-auto px-4 lg:px-8">
         <div className="mb-12 text-center">
-          <h2 className="mb-4 text-balance text-3xl font-bold text-white lg:text-4xl">Why Zcash Chat?</h2>
+          <h2 className="mb-4 text-balance text-3xl font-bold text-white lg:text-4xl">Why ZCHAT?</h2>
         </div>
 
         <div className="grid gap-6 md:grid-cols-3">

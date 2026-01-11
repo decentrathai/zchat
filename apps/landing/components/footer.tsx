@@ -3,7 +3,7 @@ export function Footer() {
     <footer className="border-t border-cyan-500/20 bg-[#050510] py-12">
       <div className="container mx-auto px-4 lg:px-8">
         <div className="flex flex-col items-center justify-between gap-6 md:flex-row">
-          <div className="text-sm text-gray-400">© 2025 Zcash Chat (zsend.xyz)</div>
+          <div className="text-sm text-gray-400">© 2026 ZCHAT (zsend.xyz)</div>
 
           <div className="text-center text-sm text-gray-500">
             Experimental software. Not audited. Use at your own risk.
@@ -27,7 +27,7 @@ export function Footer() {
               Telegram
             </a>
             <a
-              href="https://x.com/usdt_exchangeGithub"
+              href="https://x.com/zchat_app"
               target="_blank"
               rel="noopener noreferrer"
               className="text-sm text-gray-400 transition-colors hover:text-cyan-400"

@@ -19,24 +19,23 @@ getrandom = { version = "0.2", features = ["js"] }
 clap = { version = "4.5", features = ["derive"] }
 anyhow = "1.0"
 
-# Zcash dependencies - only compiled when "native" feature is enabled
-# These are optional and only used for native (non-WASM) builds
-# WASM builds will use the stub implementation
+# Core crypto dependencies - always available (work in WASM)
+bip0039 = "0.12"
+zcash_keys = { version = "0.12", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.7", default-features = false }
+zcash_address = { version = "0.10", default-features = false }
+zip32 = "0.2"
+rand = { version = "0.8", features = ["getrandom"] }
+
+# Native-only Zcash dependencies (SQLite, proofs, gRPC)
 # Updated to zcash_client_sqlite 0.19+ for NU6.1 support (activated Nov 24, 2025)
-# All versions must match zcash_client_sqlite 0.19.1's transitive dependencies
 zcash_client_backend = { version = "0.21", optional = true, features = ["orchard"] }
 zcash_client_sqlite = { version = "0.19", optional = true, features = ["orchard"] }
-zcash_keys = { version = "0.12", optional = true, features = ["orchard"] }
 rusqlite = { version = "0.37", optional = true }
-zcash_address = { version = "0.10", optional = true }
 zcash_primitives = { version = "0.26", optional = true }
-zcash_protocol = { version = "0.7", optional = true }
-zip32 = { version = "0.2", optional = true }
-rand = { version = "0.8", optional = true }
 hex = { version = "0.4", optional = true }
 secrecy = { version = "0.8", optional = true }
 zcash_proofs = { version = "0.26", optional = true, default-features = false, features = ["local-prover", "multicore"] }
-bip0039 = { version = "0.12", optional = true }
 nonempty = { version = "0.11", optional = true }
 
 # gRPC dependencies for lightwalletd integration
@@ -50,7 +49,7 @@ tonic-build = { version = "0.11", optional = true }
 
 [features]
 default = []
-native = ["zcash_client_backend", "zcash_client_sqlite", "zcash_keys", "zcash_address", "zcash_primitives", "zcash_protocol", "zip32", "rand", "hex", "tonic", "prost", "prost-types", "tokio", "tonic-build", "rusqlite", "secrecy", "zcash_proofs", "bip0039", "nonempty"]
+native = ["zcash_client_backend", "zcash_client_sqlite", "zcash_primitives", "hex", "tonic", "prost", "prost-types", "tokio", "tonic-build", "rusqlite", "secrecy", "zcash_proofs", "nonempty"]
 
 [[bin]]
 name = "zchat-wallet"

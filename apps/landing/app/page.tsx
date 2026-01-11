@@ -2,6 +2,7 @@ import { Hero } from "@/components/hero"
 import { Features } from "@/components/features"
 import { Architecture } from "@/components/architecture"
 import { DemoVideo } from "@/components/demo-video"
+import { DownloadSection } from "@/components/download-section"
 import { PlatformsRoadmap } from "@/components/platforms-roadmap"
 import { Hackathon } from "@/components/hackathon"
 import { FinalCTA } from "@/components/final-cta"
@@ -17,6 +18,7 @@ export default function Page() {
       <Features />
       <Architecture />
       <DemoVideo />
+      <DownloadSection />
       <PlatformsRoadmap />
       <Hackathon />
       <FinalCTA />

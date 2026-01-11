@@ -19,7 +19,7 @@ export default function ComingSoonPage() {
           </div>
 
           <h1 className="mb-6 text-balance text-4xl font-bold text-white lg:text-5xl xl:text-6xl">
-            Zcash Chat is Almost Here
+            ZCHAT is Almost Here
           </h1>
 
           <p className="mb-8 text-pretty text-xl leading-relaxed text-gray-300 lg:text-2xl">

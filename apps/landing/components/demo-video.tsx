@@ -3,7 +3,7 @@ export function DemoVideo() {
     <section id="demo-video" className="relative py-20 lg:py-32">
       <div className="container mx-auto px-4 lg:px-8">
         <div className="mb-12 text-center">
-          <h2 className="mb-4 text-balance text-3xl font-bold text-white lg:text-4xl">See Zcash Chat in action</h2>
+          <h2 className="mb-4 text-balance text-3xl font-bold text-white lg:text-4xl">See ZCHAT in action</h2>
         </div>
 
         <div className="mx-auto max-w-4xl">
@@ -12,7 +12,7 @@ export function DemoVideo() {
               <iframe
                 className="absolute left-0 top-0 h-full w-full"
                 src="https://www.youtube.com/embed/-MzQoHxw-qs"
-                title="Zcash Chat Demo Video"
+                title="ZCHAT Demo Video"
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                 allowFullScreen
               />

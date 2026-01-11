@@ -20,13 +20,17 @@ type WalletCore = {
   list_messages: () => any; // Returns JsValue which becomes a JS array
   regenerate_wallet_quiet: () => any; // Returns JsValue (JSON)
   build_rotation_memo: (new_address: string) => string;
+  // New client-side wallet functions (seed never leaves browser)
+  generate_mnemonic: () => string;
+  derive_address_from_mnemonic: (mnemonic_phrase: string, account_index: number) => string;
+  validate_mnemonic: (mnemonic_phrase: string) => boolean;
 };
 
 // Type for a message from the wallet
 type Message = {
   id: string;
   txid: string;
-  from_address?: string; // Sender's address (from ZMSGv2 memo or our address for outgoing)
+  from_address: string | null; // Sender's address (from ZMSGv2 memo or our address for outgoing)
   to_address: string;    // Recipient's address
   timestamp: number;
   text: string;
@@ -87,9 +91,9 @@ export default function Home() {
   useEffect(() => {
     async function loadWallet() {
       try {
-        // @ts-ignore - webpack will ignore this import
         const wasmModule = await import(
           /* webpackIgnore: true */
+          // @ts-ignore - runtime WASM import from public directory
           '/wallet-core/pkg/wallet_core.js'
         );
 
@@ -129,7 +133,7 @@ export default function Home() {
               id: msg.txid,
               txid: msg.txid,
               // Use from_address from backend if available, otherwise infer from incoming flag
-              from_address: msg.from_address || (msg.incoming ? undefined : walletResponse.address),
+              from_address: msg.from_address || (msg.incoming ? null : walletResponse.address),
               // Use to_address from backend if available, otherwise infer from incoming flag
               to_address: msg.to_address || (msg.incoming ? walletResponse.address : ''),
               timestamp: msg.timestamp,
@@ -140,8 +144,8 @@ export default function Home() {
             }));
             setMessages(transformedMessages);
           } catch (e) {
-            console.error('Failed to restore session from backend:', e);
-            // Clear invalid token
+            // Session expired or invalid - silently clear token and let user log in again
+            console.log('Session expired, clearing token');
             localStorage.removeItem('authToken');
           }
         }
@@ -269,45 +273,58 @@ export default function Home() {
     try {
       setAuthMessage('');
 
-      // Register with backend
-      const registerResponse = await register(username, password);
-
-      // Initialize wallet
-      if (walletCore) {
-        walletCore.init_new_wallet();
-        localStorage.setItem('walletInitialized', 'true');
-        setWalletInitialized(true);
-
-        // Get address
-        try {
-          const address = walletCore.get_primary_address();
-          if (!address.startsWith('error:')) {
-            setCurrentUserAddress(address);
-          }
-        } catch (e) {
-          console.error('Failed to get address:', e);
-        }
+      if (!walletCore) {
+        setAuthMessage('Wallet module not loaded. Please refresh the page.');
+        return;
       }
 
-      // Store auth token (login after registration)
+      // Step 1: Generate seed phrase client-side (never leaves browser)
+      const mnemonic = walletCore.generate_mnemonic();
+      if (mnemonic.startsWith('error:')) {
+        setAuthMessage(`Failed to generate wallet: ${mnemonic}`);
+        return;
+      }
+
+      // Step 2: Derive address from seed phrase (account index 0)
+      const address = walletCore.derive_address_from_mnemonic(mnemonic, 0);
+      if (address.startsWith('error:')) {
+        setAuthMessage(`Failed to derive address: ${address}`);
+        return;
+      }
+
+      // Step 3: Store seed phrase in localStorage (client-side only)
+      // In production, this should be encrypted with user's password
+      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      localStorage.setItem('zchat_wallet_address', address);
+      localStorage.setItem('walletInitialized', 'true');
+
+      // Update state
+      setSeedPhrase(mnemonic);
+      setCurrentUserAddress(address);
+      setWalletInitialized(true);
+
+      // Step 4: Register with backend
+      const registerResponse = await register(username, password);
+
+      // Step 5: Login to get auth token
       const loginResponse = await login(username, password);
       localStorage.setItem('authToken', loginResponse.token);
 
-      // Link wallet address to account
-      if (walletCore && currentUserAddress) {
-        try {
-          await linkWalletAddress(loginResponse.token, currentUserAddress);
-          setAuthMessage('Wallet and account created. Wallet address linked to account.');
-        } catch (error: any) {
-          setAuthMessage(`Wallet and account created, but failed to link address: ${error.message}`);
-        }
-      } else {
-        setAuthMessage('Wallet and account created');
+      // Step 6: Link wallet address to account on backend
+      // Also pass the mnemonic so backend can import the wallet for per-user wallet database
+      try {
+        await linkWalletAddress(loginResponse.token, address, mnemonic);
+        setAuthMessage('Wallet created! Your seed phrase is shown in the sidebar. Please back it up!');
+      } catch (error: any) {
+        setAuthMessage(`Wallet created, but failed to link address: ${error.message}`);
       }
 
       setCurrentUser(loginResponse.user);
       setUsername('');
       setPassword('');
+
+      // Show seed phrase immediately after registration
+      setShowSeed(true);
     } catch (error: any) {
       setAuthMessage(error.message || 'Registration failed');
     }
@@ -353,10 +370,18 @@ export default function Home() {
 
   // Wallet handlers
   const handleShowSeed = () => {
-    if (walletCore) {
-      const phrase = walletCore.get_backup_phrase();
-      setSeedPhrase(phrase);
+    // Get seed phrase from localStorage (stored client-side during registration)
+    const storedSeed = localStorage.getItem('zchat_seed_phrase');
+    if (storedSeed) {
+      setSeedPhrase(storedSeed);
       setShowSeed(true);
+    } else {
+      // Fallback to WASM (for legacy wallets)
+      if (walletCore) {
+        const phrase = walletCore.get_backup_phrase();
+        setSeedPhrase(phrase);
+        setShowSeed(true);
+      }
     }
   };
 
@@ -382,43 +407,44 @@ export default function Home() {
     try {
       setWalletActionStatus('Regenerating wallet...');
 
-      // 2) Call walletCore.regenerate_wallet_quiet()
-      const result = walletCore.regenerate_wallet_quiet();
-
-      // 3) Parse JSON result
-      let parsedResult: any;
-      if (typeof result === 'string') {
-        parsedResult = JSON.parse(result);
-      } else {
-        parsedResult = result;
-      }
-
-      // Check for error
-      if (parsedResult.error) {
-        setWalletActionStatus(`error: ${parsedResult.error}`);
+      // 2) Generate new seed phrase client-side
+      const mnemonic = walletCore.generate_mnemonic();
+      if (mnemonic.startsWith('error:')) {
+        setWalletActionStatus(`error: ${mnemonic}`);
         return;
       }
 
-      // 4) Update currentUserAddress with new address
-      const newAddress = parsedResult.address;
-      setCurrentUserAddress(newAddress);
+      // 3) Derive new address from seed phrase
+      const newAddress = walletCore.derive_address_from_mnemonic(mnemonic, 0);
+      if (newAddress.startsWith('error:')) {
+        setWalletActionStatus(`error: ${newAddress}`);
+        return;
+      }
 
-      // 5) Update localStorage
+      // 4) Update localStorage with new seed and address
+      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      localStorage.setItem('zchat_wallet_address', newAddress);
       localStorage.setItem('walletInitialized', 'true');
-      // Clear old seed backup status since it's a new wallet
       localStorage.removeItem('seedBackedUp');
+
+      // 5) Update state
+      setSeedPhrase(mnemonic);
+      setCurrentUserAddress(newAddress);
+      setSeedBackedUp(false);
 
       // 6) Clear messages/conversations state
       setMessages([]);
       setConversations([]);
       setSelectedPeerAddress(null);
 
-      // 7) Call linkWalletAddress to update backend
+      // 7) Call linkWalletAddress to update backend with mnemonic for per-user wallet
       const token = getAuthToken();
       if (token) {
         try {
-          await linkWalletAddress(token, newAddress);
+          await linkWalletAddress(token, newAddress, mnemonic);
           setWalletActionStatus('Wallet regenerated successfully');
+          // Show seed phrase after regeneration
+          setShowSeed(true);
         } catch (error: any) {
           setWalletActionStatus(`Wallet regenerated, but failed to link address: ${error.message}`);
         }
@@ -452,24 +478,23 @@ export default function Home() {
     try {
       setWalletActionStatus('Regenerating wallet...');
 
-      // 2) Regenerate wallet quietly
-      const result = walletCore.regenerate_wallet_quiet();
-
-      // Parse JSON result
-      let parsedResult: any;
-      if (typeof result === 'string') {
-        parsedResult = JSON.parse(result);
-      } else {
-        parsedResult = result;
-      }
-
-      // Check for error
-      if (parsedResult.error) {
-        setWalletActionStatus(`error: ${parsedResult.error}`);
+      // 2) Generate new seed phrase client-side
+      const mnemonic = walletCore.generate_mnemonic();
+      if (mnemonic.startsWith('error:')) {
+        setWalletActionStatus(`error: ${mnemonic}`);
         return;
       }
 
-      const newAddress = parsedResult.address;
+      // 3) Derive new address from seed phrase
+      const newAddress = walletCore.derive_address_from_mnemonic(mnemonic, 0);
+      if (newAddress.startsWith('error:')) {
+        setWalletActionStatus(`error: ${newAddress}`);
+        return;
+      }
+
+      // Store new seed phrase
+      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      setSeedPhrase(mnemonic);
 
       // 3) Send rotation messages to all peers
       const token = getAuthToken();
@@ -522,13 +547,17 @@ export default function Home() {
 
       // 4) Finalize regeneration: update address and backend
       setCurrentUserAddress(newAddress);
+      localStorage.setItem('zchat_wallet_address', newAddress);
       localStorage.setItem('walletInitialized', 'true');
       localStorage.removeItem('seedBackedUp');
+      setSeedBackedUp(false);
 
-      // Link new address to backend
+      // Link new address to backend with mnemonic for per-user wallet
       try {
-        await linkWalletAddress(token, newAddress);
+        await linkWalletAddress(token, newAddress, mnemonic);
         setWalletActionStatus(`Rotation complete: ${successCount} sent, ${errorCount} failed`);
+        // Show seed phrase after regeneration
+        setShowSeed(true);
       } catch (error: any) {
         setWalletActionStatus(`Rotation messages sent (${successCount}/${conversations.length}), but failed to link address: ${error.message}`);
       }
@@ -574,21 +603,6 @@ export default function Home() {
   };
 
   // Debug handlers
-  const handleDebugLightwalletdUrl = () => {
-    try {
-      setDebugError('');
-      if (!walletCore) {
-        setDebugError('Wallet core not loaded');
-        return;
-      }
-      const url = walletCore.get_lightwalletd_url();
-      setDebugResult(`Lightwalletd URL: ${url}`);
-    } catch (error: any) {
-      setDebugError(`Error: ${error.message || String(error)}`);
-      setDebugResult('');
-    }
-  };
-
   const handleDebugNetwork = () => {
     try {
       setDebugError('');
@@ -649,7 +663,7 @@ export default function Home() {
       const transformedMessages: Message[] = result.messages.map((msg: any) => ({
         id: msg.txid,
         txid: msg.txid,
-        from_address: msg.incoming ? undefined : myAddress, // If incoming, sender is unknown (peer)
+        from_address: msg.incoming ? null : myAddress, // If incoming, sender is unknown (peer)
         to_address: msg.incoming ? myAddress : (msg.to_address || ''),
         timestamp: msg.timestamp,
         text: msg.memo || '',
@@ -941,7 +955,6 @@ export default function Home() {
         walletInitialized={walletInitialized}
         debugResult={debugResult}
         debugError={debugError}
-        onDebugLightwalletdUrl={handleDebugLightwalletdUrl}
         onDebugNetwork={handleDebugNetwork}
         onDebugInitWallet={handleDebugInitWallet}
         syncResult={syncResult}

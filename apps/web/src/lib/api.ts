@@ -1,4 +1,4 @@
-const API_BASE_URL = 'http://localhost:4000';
+const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000';
 
 export interface RegisterResponse {
   id: number;
@@ -75,15 +75,24 @@ export async function login(username: string, password: string): Promise<LoginRe
 
 /**
  * Link wallet address to the authenticated user
+ * Also imports the wallet on the backend using the provided mnemonic
+ *
+ * @param token - JWT auth token
+ * @param address - The user's Zcash unified address (derived client-side)
+ * @param mnemonic - The user's 24-word BIP39 mnemonic (client-side generated)
  */
-export async function linkWalletAddress(token: string, address: string): Promise<WalletAddressResponse> {
+export async function linkWalletAddress(
+  token: string,
+  address: string,
+  mnemonic: string
+): Promise<WalletAddressResponse> {
   const response = await fetch(`${API_BASE_URL}/me/wallet`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({ address }),
+    body: JSON.stringify({ address, mnemonic }),
   });
 
   const data = await response.json();

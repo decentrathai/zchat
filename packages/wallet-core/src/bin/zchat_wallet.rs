@@ -30,6 +30,16 @@ enum Command {
         birthday: Option<u64>,
     },
 
+    /// Import a wallet from a mnemonic seed phrase
+    Import {
+        /// The 24-word BIP39 mnemonic seed phrase
+        #[arg(long)]
+        mnemonic: String,
+        /// Optional birthday height (defaults to current chain tip)
+        #[arg(long)]
+        birthday: Option<u64>,
+    },
+
     /// Print the primary Unified Address
     Address,
 
@@ -70,13 +80,48 @@ fn main() -> anyhow::Result<()> {
     let db_path = cli.db_path.to_string_lossy().to_string();
 
     // Create WalletCore instance with the provided paths
-    let wallet = WalletCore::new_with_path(db_path, cli.lightwalletd);
+    let wallet = WalletCore::new_with_path(db_path.clone(), cli.lightwalletd);
 
     match cli.command {
         Command::Init { birthday } => {
             let result = wallet.init_new_wallet_at_height(birthday)
                 .map_err(|e| anyhow::anyhow!("Failed to initialize wallet: {}", e))?;
             println!("{}", result);
+        }
+        Command::Import { mnemonic, birthday } => {
+            // Write the mnemonic to the .mnemonic file so init can find it
+            let mnemonic_file_path = format!("{}.mnemonic", db_path);
+
+            // Check if wallet already exists
+            if std::path::Path::new(&mnemonic_file_path).exists() {
+                let output = serde_json::json!({
+                    "error": "wallet-already-exists"
+                });
+                println!("{}", serde_json::to_string(&output).unwrap());
+                return Ok(());
+            }
+
+            // Write the provided mnemonic
+            std::fs::write(&mnemonic_file_path, mnemonic.trim())
+                .map_err(|e| anyhow::anyhow!("Failed to write mnemonic file: {}", e))?;
+
+            // Now initialize the wallet - it will pick up the mnemonic file
+            let result = wallet.init_new_wallet_at_height(birthday)
+                .map_err(|e| anyhow::anyhow!("Failed to initialize wallet from mnemonic: {}", e))?;
+
+            // Parse the result to get the address and return as JSON
+            if result.starts_with("wallet-initialized:") {
+                let address = result.strip_prefix("wallet-initialized:").unwrap().trim();
+                let output = serde_json::json!({
+                    "address": address
+                });
+                println!("{}", serde_json::to_string(&output).unwrap());
+            } else {
+                let output = serde_json::json!({
+                    "error": result
+                });
+                println!("{}", serde_json::to_string(&output).unwrap());
+            }
         }
         Command::Address => {
             let addr = wallet.primary_address()

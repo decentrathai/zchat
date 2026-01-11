@@ -15,7 +15,7 @@ export const truncateAddress = (address: string, prefixLen = 5, suffixLen = 5): 
 type Message = {
   id: string;
   txid: string;
-  from_address?: string;
+  from_address: string | null;
   to_address: string;
   timestamp: number;
   text: string;
@@ -375,7 +375,7 @@ export default function ChatSidebar({
         </button>
         {conversations.length === 0 && !isComposingNewChat && (
           <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-            No conversations yet. Click "+ New Chat" and paste a recipient address.
+            No conversations yet. Click &quot;+ New Chat&quot; and paste a recipient address.
           </p>
         )}
       </div>

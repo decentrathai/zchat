@@ -20,9 +20,9 @@ export default function WalletStatus() {
       try {
         // Load WASM module from public folder
         // Use webpackIgnore to prevent webpack from trying to bundle it
-        // @ts-ignore - webpack will ignore this import
         const wasmModule = await import(
           /* webpackIgnore: true */
+          // @ts-ignore - runtime WASM import from public directory
           '/wallet-core/pkg/wallet_core.js'
         );
         

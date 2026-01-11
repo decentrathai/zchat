@@ -61,7 +61,7 @@ export default function DeveloperTools({
     setIsRpcLoading(true);
 
     try {
-      const response = await fetch('http://localhost:4000/zcash/network-info', {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:4000'}/zcash/network-info`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
