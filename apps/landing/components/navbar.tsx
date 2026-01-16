@@ -29,6 +29,12 @@ export function Navbar() {
             How it works
           </button>
           <button
+            onClick={() => scrollToSection("about")}
+            className="text-sm text-gray-300 transition-colors hover:text-cyan-400"
+          >
+            About
+          </button>
+          <button
             onClick={() => scrollToSection("roadmap")}
             className="text-sm text-gray-300 transition-colors hover:text-cyan-400"
           >

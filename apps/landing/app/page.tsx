@@ -6,9 +6,11 @@ import { DownloadSection } from "@/components/download-section"
 import { PlatformsRoadmap } from "@/components/platforms-roadmap"
 import { Hackathon } from "@/components/hackathon"
 import { FinalCTA } from "@/components/final-cta"
+import { CypherpunkManifesto } from "@/components/cypherpunk-manifesto"
 import { Contact } from "@/components/contact"
 import { Footer } from "@/components/footer"
 import { Navbar } from "@/components/navbar"
+import { About } from "@/components/about"
 
 export default function Page() {
   return (
@@ -19,9 +21,11 @@ export default function Page() {
       <Architecture />
       <DemoVideo />
       <DownloadSection />
+      <About />
       <PlatformsRoadmap />
       <Hackathon />
       <FinalCTA />
+      <CypherpunkManifesto />
       <Contact />
       <Footer />
     </main>
