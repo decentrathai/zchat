@@ -1,9 +1,18 @@
 "use client"
 
+import Link from "next/link"
+import { usePathname } from "next/navigation"
 import { Button } from "@/components/ui/button"
 
 export function Navbar() {
+  const pathname = usePathname()
+  const isHomePage = pathname === "/"
+
   const scrollToSection = (id: string) => {
+    if (!isHomePage) {
+      window.location.href = `/#${id}`
+      return
+    }
     const element = document.getElementById(id)
     if (element) {
       element.scrollIntoView({ behavior: "smooth" })
@@ -13,7 +22,9 @@ export function Navbar() {
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-cyan-500/20 bg-[#050510]/80 backdrop-blur-md">
       <div className="container mx-auto flex items-center justify-between px-4 py-4 lg:px-8">
-        <div className="text-xl font-bold text-white">ZCHAT</div>
+        <Link href="/" className="text-xl font-bold text-white hover:text-cyan-400 transition-colors">
+          ZCHAT
+        </Link>
 
         <div className="hidden items-center gap-8 md:flex">
           <button
@@ -28,12 +39,12 @@ export function Navbar() {
           >
             How it works
           </button>
-          <button
-            onClick={() => scrollToSection("about")}
+          <Link
+            href="/about"
             className="text-sm text-gray-300 transition-colors hover:text-cyan-400"
           >
             About
-          </button>
+          </Link>
           <button
             onClick={() => scrollToSection("roadmap")}
             className="text-sm text-gray-300 transition-colors hover:text-cyan-400"

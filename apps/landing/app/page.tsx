@@ -10,7 +10,6 @@ import { CypherpunkManifesto } from "@/components/cypherpunk-manifesto"
 import { Contact } from "@/components/contact"
 import { Footer } from "@/components/footer"
 import { Navbar } from "@/components/navbar"
-import { About } from "@/components/about"
 
 export default function Page() {
   return (
@@ -21,7 +20,6 @@ export default function Page() {
       <Architecture />
       <DemoVideo />
       <DownloadSection />
-      <About />
       <PlatformsRoadmap />
       <Hackathon />
       <FinalCTA />
