@@ -76,12 +76,9 @@ describe('truncateAddress', () => {
       const address = 'u1abcdefghijklmnopqrstuvwxyz';
       const result = truncateAddress(address, 5, 0);
 
-      // Note: slice(-0) returns the whole string, so the function returns
-      // the original address if suffix length is 0 and string is long
-      // This is a quirk of slice(-0) === slice(0)
-      // The actual output shows the bug: 'u1abc...u1abcdefghijklmnopqrstuvwxyz'
-      // This test documents the current (buggy) behavior
-      expect(result).toBe('u1abc...' + address);
+      // Fixed: suffixLen=0 now correctly returns prefix + ellipsis only
+      // (Previous bug: slice(-0) returned entire string)
+      expect(result).toBe('u1abc...');
     });
   });
 

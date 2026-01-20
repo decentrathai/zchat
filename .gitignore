@@ -43,9 +43,20 @@ wallet-db/
 *.sqlite-wal
 *.sqlite-shm
 
-# Development docs/notes
+# Development docs/notes (allow key documentation)
 *.md
 !README.md
+!CLAUDE.md
+!ARCHITECTURE.md
+!PRODUCT.md
+!DECISIONS.md
+!DEVELOPMENT_STANDARDS.md
+!ANDROID_FIX_PLAN.md
+!ISSUES_TO_FIX.md
+!IMPLEMENTATION_STEPS.md
+!SESSION_RESTART_PROMPT.md
+!SYSTEM_PROMPT.md
+!ANDROID_TEST_REQUIREMENTS.md
 
 # Screenshots and temp files
 screenshot.png
