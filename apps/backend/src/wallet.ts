@@ -5,6 +5,16 @@ import * as fs from 'fs';
 
 const execFileAsync = promisify(execFile);
 
+// Timeout for wallet CLI operations (30 seconds)
+const CLI_TIMEOUT_MS = 30000;
+
+// Type-safe error message extraction (MEDIUM #B1)
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return String(error);
+}
+
 // Configuration from environment variables
 const WALLET_DB_BASE_DIR = process.env.WALLET_DB_BASE_DIR || '/home/yourt/zchat/wallet-db';
 const LIGHTWALLETD_URL = process.env.ZCASH_LIGHTWALLETD_URL || 'http://127.0.0.1:9067';
@@ -18,11 +28,13 @@ export function getUserWalletDbPath(userId: number): string {
 }
 
 /**
- * Ensure the wallet database directory exists
+ * Ensure the wallet database directory exists (async version - #R3-M1)
  */
-export function ensureWalletDbDir(): void {
-  if (!fs.existsSync(WALLET_DB_BASE_DIR)) {
-    fs.mkdirSync(WALLET_DB_BASE_DIR, { recursive: true });
+export async function ensureWalletDbDir(): Promise<void> {
+  try {
+    await fs.promises.access(WALLET_DB_BASE_DIR);
+  } catch {
+    await fs.promises.mkdir(WALLET_DB_BASE_DIR, { recursive: true });
   }
 }
 
@@ -51,7 +63,7 @@ export async function buildTransaction(
       toAddress,
       amount.toString(),
       memo,
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     const output = stdout.trim();
     const result = JSON.parse(output);
@@ -64,8 +76,8 @@ export async function buildTransaction(
       txHex: result.txHex,
       txid: result.txid,
     };
-  } catch (error: any) {
-    throw new Error(`Failed to build transaction: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to build transaction: ${getErrorMessage(error)}`);
   }
 }
 
@@ -79,7 +91,7 @@ export async function getBalance(walletDbPath: string): Promise<number> {
       '--db-path', walletDbPath,
       '--lightwalletd', LIGHTWALLETD_URL,
       'balance',
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     const output = stdout.trim();
     const result = JSON.parse(output);
@@ -89,8 +101,8 @@ export async function getBalance(walletDbPath: string): Promise<number> {
     }
 
     return result.balance_zatoshis;
-  } catch (error: any) {
-    throw new Error(`Failed to get balance: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to get balance: ${getErrorMessage(error)}`);
   }
 }
 
@@ -104,45 +116,32 @@ export async function getPrimaryAddress(walletDbPath: string): Promise<string> {
       '--db-path', walletDbPath,
       '--lightwalletd', LIGHTWALLETD_URL,
       'address',
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     return stdout.trim();
-  } catch (error: any) {
-    throw new Error(`Failed to get primary address: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to get primary address: ${getErrorMessage(error)}`);
   }
 }
 
 /**
  * Import a wallet from a mnemonic seed phrase
- * @param walletDbPath - Path to the user's wallet database
- * @param mnemonic - The user's 24-word BIP39 mnemonic seed phrase (passed from frontend)
+ *
+ * SECURITY: This function is DISABLED. Mnemonic should never reach the server.
+ * The wallet is now managed entirely client-side (Android/Web).
+ * Backend only stores public addresses.
+ *
+ * See ISSUES_TO_FIX.md CRITICAL #B1 and #B2 for details.
+ *
+ * @deprecated This function is disabled for security reasons
+ * @throws Always throws - function is disabled
  */
-export async function importWallet(walletDbPath: string, mnemonic: string): Promise<{ address: string }> {
-  try {
-    // Ensure the wallet db directory exists
-    ensureWalletDbDir();
-
-    const { stdout } = await execFileAsync(WALLET_CLI_BINARY, [
-      '--db-path', walletDbPath,
-      '--lightwalletd', LIGHTWALLETD_URL,
-      'import',
-      '--mnemonic', mnemonic,
-    ]);
-
-    // The import command returns JSON with address or error
-    const output = stdout.trim();
-    const result = JSON.parse(output);
-
-    if (result.address) {
-      return { address: result.address };
-    } else if (result.error === 'wallet-already-exists') {
-      throw new Error('Wallet already exists');
-    } else {
-      throw new Error(`Unexpected import response: ${output}`);
-    }
-  } catch (error: any) {
-    throw new Error(`Failed to import wallet: ${error.message}`);
-  }
+export async function importWallet(_walletDbPath: string, _mnemonic: string): Promise<{ address: string }> {
+  throw new Error(
+    'importWallet is DISABLED for security. ' +
+    'Mnemonic should never be sent to the server. ' +
+    'Wallet management is now client-side only.'
+  );
 }
 
 /**
@@ -153,13 +152,13 @@ export async function importWallet(walletDbPath: string, mnemonic: string): Prom
 export async function initWallet(walletDbPath: string): Promise<{ address: string }> {
   try {
     // Ensure the wallet db directory exists
-    ensureWalletDbDir();
+    await ensureWalletDbDir();
 
     const { stdout } = await execFileAsync(WALLET_CLI_BINARY, [
       '--db-path', walletDbPath,
       '--lightwalletd', LIGHTWALLETD_URL,
       'init',
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     // The init command returns "wallet-initialized: <address>" format
     const output = stdout.trim();
@@ -172,8 +171,8 @@ export async function initWallet(walletDbPath: string): Promise<{ address: strin
     } else {
       throw new Error(`Unexpected init response: ${output}`);
     }
-  } catch (error: any) {
-    throw new Error(`Failed to initialize wallet: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to initialize wallet: ${getErrorMessage(error)}`);
   }
 }
 
@@ -187,7 +186,7 @@ export async function syncWallet(walletDbPath: string): Promise<{ synced_to_heig
       '--db-path', walletDbPath,
       '--lightwalletd', LIGHTWALLETD_URL,
       'sync',
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     const output = stdout.trim();
     const result = JSON.parse(output);
@@ -197,8 +196,8 @@ export async function syncWallet(walletDbPath: string): Promise<{ synced_to_heig
     }
 
     return { synced_to_height: result.synced_to_height };
-  } catch (error: any) {
-    throw new Error(`Failed to sync wallet: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to sync wallet: ${getErrorMessage(error)}`);
   }
 }
 
@@ -221,7 +220,7 @@ export async function sendTransaction(
       to,
       amountZatoshis.toString(),
       memo,
-    ]);
+    ], { timeout: CLI_TIMEOUT_MS });
 
     const output = stdout.trim();
     const result = JSON.parse(output);
@@ -234,8 +233,8 @@ export async function sendTransaction(
       txid: result.txid,
       txHex: result.txHex,
     };
-  } catch (error: any) {
-    throw new Error(`Failed to send transaction: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to send transaction: ${getErrorMessage(error)}`);
   }
 }
 
@@ -243,7 +242,18 @@ export async function sendTransaction(
  * Get messages from transactions
  * @param walletDbPath - Path to the user's wallet database
  */
-export async function getMessages(walletDbPath: string, sinceHeight?: number): Promise<{ messages: any[] }> {
+// Message type from wallet CLI
+interface WalletMessage {
+  txid: string;
+  height: number;
+  timestamp: number;
+  memo: string;
+  from?: string;
+  to?: string;
+  amount_zatoshis?: number;
+}
+
+export async function getMessages(walletDbPath: string, sinceHeight?: number): Promise<{ messages: WalletMessage[] }> {
   try {
     const args = [
       '--db-path', walletDbPath,
@@ -255,7 +265,7 @@ export async function getMessages(walletDbPath: string, sinceHeight?: number): P
       args.push('--since-height', sinceHeight.toString());
     }
     
-    const { stdout } = await execFileAsync(WALLET_CLI_BINARY, args);
+    const { stdout } = await execFileAsync(WALLET_CLI_BINARY, args, { timeout: CLI_TIMEOUT_MS });
 
     const output = stdout.trim();
     const result = JSON.parse(output);
@@ -265,8 +275,8 @@ export async function getMessages(walletDbPath: string, sinceHeight?: number): P
     }
 
     return { messages: result.messages };
-  } catch (error: any) {
-    throw new Error(`Failed to get messages: ${error.message}`);
+  } catch (error) {
+    throw new Error(`Failed to get messages: ${getErrorMessage(error)}`);
   }
 }
 

@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import Fastify, { FastifyRequest, FastifyReply } from 'fastify';
 import cors from '@fastify/cors';
-import fastifyStatic from '@fastify/static';
+import rateLimit from '@fastify/rate-limit';
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -9,17 +9,71 @@ import crypto from 'crypto';
 import path from 'path';
 import fs from 'fs';
 import { Resend } from 'resend';
-import * as wallet from './wallet';
-import { syncWallet, sendTransaction, getMessages, getUserWalletDbPath, importWallet, ensureWalletDbDir } from './wallet';
 
-// JWT Secret - use environment variable or fallback to dev secret (ONLY FOR DEVELOPMENT)
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret';
+// HTML escape helper to prevent XSS in emails
+function escapeHtml(unsafe: string): string {
+  return unsafe
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
-// Admin Secret for admin endpoints
-const ADMIN_SECRET = process.env.ADMIN_SECRET || 'admin-dev-secret';
+// Constant-time string comparison to prevent timing attacks
+// Uses HMAC to normalize length before comparison (prevents length oracle)
+function secureCompare(a: string, b: string): boolean {
+  // Use HMAC to normalize both strings to same length
+  // This prevents timing attacks that could reveal the secret length
+  const key = crypto.randomBytes(32);
+  const hmacA = crypto.createHmac('sha256', key).update(a).digest();
+  const hmacB = crypto.createHmac('sha256', key).update(b).digest();
+  return crypto.timingSafeEqual(hmacA, hmacB);
+}
 
-// APK file location
+// Type-safe error message extraction (MEDIUM #B1)
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
+  return String(error);
+}
+
+// Type-safe Prisma error code extraction
+function getPrismaErrorCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return (error as { code: string }).code;
+  }
+  return undefined;
+}
+import { syncWallet, sendTransaction, getMessages, getUserWalletDbPath, ensureWalletDbDir, getPrimaryAddress, getBalance, buildTransaction } from './wallet';
+
+// JWT Secret - REQUIRED in production
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('JWT_SECRET environment variable is required in production');
+}
+const jwtSecret = JWT_SECRET || 'dev-secret-DO-NOT-USE-IN-PRODUCTION';
+
+// Admin Secret for admin endpoints - REQUIRED in production
+const ADMIN_SECRET = process.env.ADMIN_SECRET;
+if (!ADMIN_SECRET && process.env.NODE_ENV === 'production') {
+  throw new Error('ADMIN_SECRET environment variable is required in production');
+}
+const adminSecret = ADMIN_SECRET || 'admin-dev-secret-DO-NOT-USE-IN-PRODUCTION';
+
+// APK file location - validated at startup (MEDIUM #B3)
 const APK_DIR = process.env.APK_DIR || '/home/yourt';
+
+// Validate APK_DIR path to prevent misconfiguration
+if (!path.isAbsolute(APK_DIR)) {
+  throw new Error(`APK_DIR must be an absolute path, got: ${APK_DIR}`);
+}
+if (!fs.existsSync(APK_DIR)) {
+  console.warn(`Warning: APK_DIR does not exist: ${APK_DIR}`);
+}
+if (fs.existsSync(APK_DIR) && !fs.statSync(APK_DIR).isDirectory()) {
+  throw new Error(`APK_DIR is not a directory: ${APK_DIR}`);
+}
 
 // Resend API for sending emails
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
@@ -37,6 +91,10 @@ async function notifyAdminNewWhitelistRequest(email: string, reason: string) {
   const timestamp = new Date().toISOString();
 
   // Send email notification
+  // HTML-escape user input to prevent XSS (HIGH #B3)
+  const safeEmail = escapeHtml(email);
+  const safeReason = escapeHtml(reason);
+
   if (resend && ADMIN_NOTIFICATION_EMAIL) {
     try {
       await resend.emails.send({
@@ -45,43 +103,65 @@ async function notifyAdminNewWhitelistRequest(email: string, reason: string) {
         subject: '🆕 New ZCHAT Whitelist Request',
         html: `
           <h2>New Whitelist Request</h2>
-          <p><strong>Email:</strong> ${email}</p>
-          <p><strong>Reason:</strong> ${reason}</p>
+          <p><strong>Email:</strong> ${safeEmail}</p>
+          <p><strong>Reason:</strong> ${safeReason}</p>
           <p><strong>Time:</strong> ${timestamp}</p>
           <hr>
           <p><a href="https://zsend.xyz/admin">Go to Admin Dashboard</a></p>
         `,
       });
-      console.log(`[Notification] Email sent to ${ADMIN_NOTIFICATION_EMAIL} for new request: ${email}`);
+      server.log.info({ to: ADMIN_NOTIFICATION_EMAIL, requestEmail: email }, 'Notification email sent');
     } catch (err) {
-      console.error('[Notification] Failed to send email:', err);
+      server.log.error({ err }, 'Failed to send notification email');
     }
   }
 
   // Send Telegram notification
   if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
     try {
-      const message = `🆕 *New ZCHAT Whitelist Request*\n\n📧 *Email:* ${email}\n📝 *Reason:* ${reason}\n⏰ *Time:* ${timestamp}`;
+      const message = `🆕 *New ZCHAT Whitelist Request*\n\n📧 *Email:* ${safeEmail}\n📝 *Reason:* ${safeReason}\n⏰ *Time:* ${timestamp}`;
       const telegramUrl = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`;
 
-      await fetch(telegramUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: TELEGRAM_CHAT_ID,
-          text: message,
-          parse_mode: 'Markdown',
-        }),
-      });
-      console.log(`[Notification] Telegram message sent for new request: ${email}`);
+      // Add timeout to prevent hanging (10 seconds)
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      try {
+        await fetch(telegramUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            chat_id: TELEGRAM_CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown',
+          }),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeout);
+      }
+      server.log.info({ chatId: TELEGRAM_CHAT_ID, requestEmail: email }, 'Telegram notification sent');
     } catch (err) {
-      console.error('[Notification] Failed to send Telegram message:', err);
+      server.log.error({ err }, 'Failed to send Telegram notification');
     }
   }
 }
 
 // Store for one-time download tokens (in production, use Redis)
 const downloadTokens: Map<string, { whitelistId: number; codeId: number; createdAt: Date }> = new Map();
+
+// Max tokens to prevent memory exhaustion (#R3-M4)
+const MAX_DOWNLOAD_TOKENS = 10000;
+
+// TTL cleanup for downloadTokens to prevent memory leak (HIGH #B2)
+const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of downloadTokens.entries()) {
+    if (now - value.createdAt.getTime() > TOKEN_TTL_MS) {
+      downloadTokens.delete(key);
+    }
+  }
+}, 5 * 60 * 1000); // Run every 5 minutes
 
 // Zcash RPC Configuration - GetBlock.io JSON-RPC endpoint
 const ZCASH_RPC_URL = process.env.ZCASH_RPC_URL;
@@ -107,9 +187,44 @@ declare module 'fastify' {
 
 const server = Fastify({
   logger: true,
+  bodyLimit: 1048576, // 1MB max body size (MEDIUM #B2)
 });
 
-server.register(cors);
+// CORS configuration - restrict to known origins in production
+const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
+  'https://app.zsend.xyz',
+  'https://zsend.xyz',
+  'http://localhost:3000'  // Development only
+];
+
+server.register(cors, {
+  origin: (origin, cb) => {
+    // Allow requests with no origin (like mobile apps, curl)
+    if (!origin) return cb(null, true);
+
+    if (ALLOWED_ORIGINS.includes(origin)) {
+      return cb(null, true);
+    }
+
+    // In development, allow all origins
+    if (process.env.NODE_ENV !== 'production') {
+      return cb(null, true);
+    }
+
+    return cb(new Error('Not allowed by CORS'), false);
+  },
+  credentials: true
+});
+
+// Rate limiting to prevent abuse (HIGH #B1)
+server.register(rateLimit, {
+  max: 100, // Max 100 requests per window
+  timeWindow: '1 minute',
+  // Stricter limits for auth endpoints
+  keyGenerator: (request) => {
+    return request.ip || 'unknown';
+  },
+});
 
 // Auth helper middleware - verifies JWT and attaches user to request
 async function authenticate(request: FastifyRequest, reply: FastifyReply) {
@@ -123,12 +238,25 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   const token = authHeader.substring(7); // Remove 'Bearer ' prefix
   
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { userId: number; username: string };
-    
+    const decoded = jwt.verify(token, jwtSecret);
+
+    // Runtime validation of JWT payload structure (#R3-H1)
+    if (
+      typeof decoded !== 'object' ||
+      decoded === null ||
+      typeof (decoded as Record<string, unknown>).userId !== 'number' ||
+      typeof (decoded as Record<string, unknown>).username !== 'string'
+    ) {
+      reply.code(401);
+      throw new Error('Invalid token payload');
+    }
+
+    const payload = decoded as { userId: number; username: string };
+
     // Attach user info to request
     request.user = {
-      id: decoded.userId,
-      username: decoded.username,
+      id: payload.userId,
+      username: payload.username,
     };
   } catch (error) {
     reply.code(401);
@@ -162,6 +290,12 @@ server.post<{ Body: { email: string; reason: string } }>('/whitelist/join', asyn
     return { error: 'Email is required' };
   }
 
+  // Email length validation (RFC 5321 limits to 254 chars - #R3-H3)
+  if (email.length > 254) {
+    reply.code(400);
+    return { error: 'Email is too long (max 254 characters)' };
+  }
+
   // Basic email validation
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   if (!emailRegex.test(email)) {
@@ -169,10 +303,14 @@ server.post<{ Body: { email: string; reason: string } }>('/whitelist/join', asyn
     return { error: 'Invalid email format' };
   }
 
-  // Validate reason
+  // Validate reason (10-1000 characters - #R3-M2)
   if (!reason || typeof reason !== 'string' || reason.trim().length < 10) {
     reply.code(400);
     return { error: 'Please provide a reason (at least 10 characters)' };
+  }
+  if (reason.length > 1000) {
+    reply.code(400);
+    return { error: 'Reason is too long (max 1000 characters)' };
   }
 
   try {
@@ -207,9 +345,9 @@ server.post<{ Body: { email: string; reason: string } }>('/whitelist/join', asyn
       success: true,
       message: 'Successfully joined the whitelist!'
     };
-  } catch (error: any) {
+  } catch (error) {
     // Handle unique constraint violation (race condition)
-    if (error.code === 'P2002') {
+    if (getPrismaErrorCode(error) === 'P2002') {
       return {
         success: true,
         message: 'You are already on the whitelist!',
@@ -217,17 +355,18 @@ server.post<{ Body: { email: string; reason: string } }>('/whitelist/join', asyn
       };
     }
 
-    server.log.error({ error: error.message }, 'Failed to join whitelist');
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to join whitelist');
     reply.code(500);
     return { error: 'Failed to join whitelist. Please try again.' };
   }
 });
 
-// Admin authentication helper
+// Admin authentication helper - uses constant-time comparison (HIGH #B4)
 async function authenticateAdmin(request: FastifyRequest, reply: FastifyReply) {
   const adminHeader = request.headers['x-admin-secret'];
 
-  if (!adminHeader || adminHeader !== ADMIN_SECRET) {
+  // Use secureCompare to prevent timing attacks
+  if (!adminHeader || typeof adminHeader !== 'string' || !secureCompare(adminHeader, adminSecret)) {
     reply.code(401);
     throw new Error('Unauthorized: Invalid admin credentials');
   }
@@ -263,8 +402,8 @@ server.get('/admin/whitelist', async (request, reply) => {
     });
 
     return { entries };
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to fetch whitelist');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to fetch whitelist');
     reply.code(500);
     return { error: 'Failed to fetch whitelist' };
   }
@@ -301,13 +440,19 @@ server.post<{ Params: { id: string }; Body: { expiresInDays?: number } }>(
         return { error: 'Whitelist entry not found' };
       }
 
-      // Generate a unique code
+      // Generate a unique code with max iterations to prevent infinite loop (#R3-M5)
       let code: string;
       let isUnique = false;
+      let attempts = 0;
+      const MAX_CODE_GENERATION_ATTEMPTS = 100;
       do {
+        if (attempts >= MAX_CODE_GENERATION_ATTEMPTS) {
+          throw new Error('Failed to generate unique download code after max attempts');
+        }
         code = generateDownloadCode();
         const existing = await prisma.downloadCode.findUnique({ where: { code } });
         isUnique = !existing;
+        attempts++;
       } while (!isUnique);
 
       // Create the download code
@@ -331,7 +476,7 @@ server.post<{ Params: { id: string }; Body: { expiresInDays?: number } }>(
         },
       });
 
-      server.log.info({ whitelistId, code }, 'Generated download code');
+      server.log.info({ whitelistId, codePrefix: code.substring(0, 2) + '***' }, 'Generated download code');
 
       return {
         success: true,
@@ -339,8 +484,8 @@ server.post<{ Params: { id: string }; Body: { expiresInDays?: number } }>(
         expiresAt: downloadCode.expiresAt,
         email: entry.email,
       };
-    } catch (error: any) {
-      server.log.error({ error: error.message }, 'Failed to generate download code');
+    } catch (error) {
+      server.log.error({ error: getErrorMessage(error) }, 'Failed to generate download code');
       reply.code(500);
       return { error: 'Failed to generate download code' };
     }
@@ -468,15 +613,15 @@ server.post<{ Params: { id: string }; Body: { code: string } }>(
         return { error: 'Failed to send email: ' + error.message };
       }
 
-      server.log.info({ email: entry.email, code }, 'Download code email sent');
+      server.log.info({ email: entry.email, codePrefix: code.substring(0, 2) + '***' }, 'Download code email sent');
 
       return {
         success: true,
         message: `Email sent to ${entry.email}`,
         emailId: data?.id,
       };
-    } catch (error: any) {
-      server.log.error({ error: error.message }, 'Failed to send email');
+    } catch (error) {
+      server.log.error({ error: getErrorMessage(error) }, 'Failed to send email');
       reply.code(500);
       return { error: 'Failed to send email' };
     }
@@ -521,6 +666,12 @@ server.post<{ Body: { code: string } }>('/download/verify-code', async (request,
       return { error: 'This download code has expired' };
     }
 
+    // Check token limit to prevent memory exhaustion (#R3-M4)
+    if (downloadTokens.size >= MAX_DOWNLOAD_TOKENS) {
+      reply.code(503);
+      return { error: 'Service temporarily unavailable. Please try again later.' };
+    }
+
     // Generate a one-time download token
     const token = generateDownloadToken();
     downloadTokens.set(token, {
@@ -537,15 +688,15 @@ server.post<{ Body: { code: string } }>('/download/verify-code', async (request,
       }
     }
 
-    server.log.info({ code, email: downloadCode.whitelist.email }, 'Download code verified');
+    server.log.info({ codePrefix: code.substring(0, 2) + '***', email: downloadCode.whitelist.email }, 'Download code verified');
 
     return {
       success: true,
       downloadUrl: `/download/apk/${token}`,
       message: 'Your download is ready! Click the link to download the APK.',
     };
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to verify download code');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to verify download code');
     reply.code(500);
     return { error: 'Failed to verify download code' };
   }
@@ -579,22 +730,29 @@ server.get<{ Params: { token: string } }>('/download/apk/:token', async (request
     // Remove the token (one-time use)
     downloadTokens.delete(token);
 
-    // Find the latest APK file
-    const apkFiles = fs.readdirSync(APK_DIR)
-      .filter(file => file.endsWith('.apk') && file.includes('zchat'))
-      .sort((a, b) => {
-        const statA = fs.statSync(path.join(APK_DIR, a));
-        const statB = fs.statSync(path.join(APK_DIR, b));
-        return statB.mtime.getTime() - statA.mtime.getTime();
-      });
+    // Find the latest APK file (async to avoid blocking event loop)
+    const fsPromises = fs.promises;
+    const allFiles = await fsPromises.readdir(APK_DIR);
+    const apkFilesUnsorted = allFiles.filter(file => file.endsWith('.apk') && file.includes('zchat'));
 
-    if (apkFiles.length === 0) {
+    if (apkFilesUnsorted.length === 0) {
       reply.code(404);
       return { error: 'APK file not found. Please contact support.' };
     }
 
-    const apkPath = path.join(APK_DIR, apkFiles[0]);
-    const apkName = apkFiles[0];
+    // Get file stats for sorting by modification time
+    const filesWithStats = await Promise.all(
+      apkFilesUnsorted.map(async (file) => {
+        const stat = await fsPromises.stat(path.join(APK_DIR, file));
+        return { file, mtime: stat.mtime.getTime() };
+      })
+    );
+
+    // Sort by modification time (newest first)
+    filesWithStats.sort((a, b) => b.mtime - a.mtime);
+
+    const apkPath = path.join(APK_DIR, filesWithStats[0].file);
+    const apkName = filesWithStats[0].file;
 
     server.log.info({ apkName, whitelistId: tokenData.whitelistId }, 'APK download started');
 
@@ -604,8 +762,8 @@ server.get<{ Params: { token: string } }>('/download/apk/:token', async (request
 
     const stream = fs.createReadStream(apkPath);
     return reply.send(stream);
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to serve APK');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to serve APK');
     reply.code(500);
     return { error: 'Failed to download APK' };
   }
@@ -613,7 +771,39 @@ server.get<{ Params: { token: string } }>('/download/apk/:token', async (request
 
 // Register a new user
 server.post<{ Body: { username: string; password: string } }>('/auth/register', async (request, reply) => {
-  const { username, password } = request.body;
+  const { username, password } = request.body || {};
+
+  // Input validation
+  if (!username || typeof username !== 'string') {
+    reply.code(400);
+    return { error: 'Username is required' };
+  }
+
+  if (!password || typeof password !== 'string') {
+    reply.code(400);
+    return { error: 'Password is required' };
+  }
+
+  // Username validation: 3-30 chars, alphanumeric and underscores only
+  if (username.length < 3 || username.length > 30) {
+    reply.code(400);
+    return { error: 'Username must be between 3 and 30 characters' };
+  }
+
+  if (!/^[a-zA-Z0-9_]+$/.test(username)) {
+    reply.code(400);
+    return { error: 'Username can only contain letters, numbers, and underscores' };
+  }
+
+  // Password validation: 8-72 characters (bcrypt truncates at 72 bytes - #R3-H2)
+  if (password.length < 8) {
+    reply.code(400);
+    return { error: 'Password must be at least 8 characters' };
+  }
+  if (password.length > 72) {
+    reply.code(400);
+    return { error: 'Password must be at most 72 characters' };
+  }
 
   try {
     // Hash the password with bcrypt (10 salt rounds)
@@ -632,13 +822,14 @@ server.post<{ Body: { username: string; password: string } }>('/auth/register', 
     });
 
     return { id: newUser.id, username: newUser.username };
-  } catch (error: any) {
+  } catch (error) {
     // Check if error is due to unique constraint violation
-    if (error.code === 'P2002' && error.meta?.target?.includes('username')) {
+    const prismaError = error as { code?: string; meta?: { target?: string[] } };
+    if (prismaError.code === 'P2002' && prismaError.meta?.target?.includes('username')) {
       reply.code(400);
       return { error: 'Username already taken' };
     }
-    
+
     // Re-throw other errors
     throw error;
   }
@@ -646,7 +837,18 @@ server.post<{ Body: { username: string; password: string } }>('/auth/register', 
 
 // Login route
 server.post<{ Body: { username: string; password: string } }>('/auth/login', async (request, reply) => {
-  const { username, password } = request.body;
+  const { username, password } = request.body || {};
+
+  // Input validation
+  if (!username || typeof username !== 'string') {
+    reply.code(400);
+    return { error: 'Username is required' };
+  }
+
+  if (!password || typeof password !== 'string') {
+    reply.code(400);
+    return { error: 'Password is required' };
+  }
 
   // Look up user by username
   const user = await prisma.user.findUnique({
@@ -669,7 +871,7 @@ server.post<{ Body: { username: string; password: string } }>('/auth/login', asy
   // Sign JWT token
   const token = jwt.sign(
     { userId: user.id, username: user.username },
-    JWT_SECRET,
+    jwtSecret,
     { expiresIn: '7d' }
   );
 
@@ -710,68 +912,50 @@ server.get('/me', async (request, reply) => {
   return user;
 });
 
-// Update user's wallet address (protected route)
-// This also initializes the per-user wallet database from the client's seed phrase
-server.post<{ Body: { address: string; mnemonic: string } }>('/me/wallet', async (request, reply) => {
+// REMOVED: /me/wallet endpoint that received mnemonic from client
+// Security: Seed phrase should NEVER be sent over the network
+// The backend now only stores public addresses, never seeds
+// See ISSUES_TO_FIX.md CRITICAL #B1 for details
+
+// Link wallet address to user (address only, no mnemonic)
+server.post<{ Body: { address: string } }>('/me/wallet', async (request, reply) => {
   await authenticate(request, reply);
 
-  // User is attached to request by authenticate middleware
   if (!request.user) {
     reply.code(401);
     return { error: 'Unauthorized' };
   }
 
-  const { address, mnemonic } = request.body;
+  const { address } = request.body;
 
   if (!address || typeof address !== 'string') {
     reply.code(400);
     return { error: 'address is required and must be a string' };
   }
 
-  if (!mnemonic || typeof mnemonic !== 'string') {
+  // Zcash unified address validation (#R3-M3)
+  // - Must start with 'u1'
+  // - Length: typically 141+ chars for mainnet unified addresses
+  // - Only alphanumeric characters (no +, /, = like base64)
+  if (!address.startsWith('u1')) {
     reply.code(400);
-    return { error: 'mnemonic is required and must be a string' };
+    return { error: 'Invalid Zcash unified address format (must start with u1)' };
   }
-
-  // Validate mnemonic is 24 words
-  const words = mnemonic.trim().split(/\s+/);
-  if (words.length !== 24) {
+  if (address.length < 100 || address.length > 500) {
     reply.code(400);
-    return { error: 'mnemonic must be exactly 24 words' };
+    return { error: 'Invalid Zcash unified address length' };
+  }
+  if (!/^[a-zA-Z0-9]+$/.test(address)) {
+    reply.code(400);
+    return { error: 'Invalid Zcash unified address characters' };
   }
 
   try {
-    // Initialize the per-user wallet database by importing the mnemonic
-    const walletDbPath = getUserWalletDbPath(request.user.id);
-
-    try {
-      // Try to import wallet - this will fail if already exists
-      const result = await importWallet(walletDbPath, mnemonic);
-      server.log.info({ userId: request.user.id, walletDbPath, derivedAddress: result.address }, 'Imported wallet for user');
-
-      // Verify the derived address matches what the client derived
-      if (result.address !== address) {
-        server.log.warn({
-          userId: request.user.id,
-          clientAddress: address,
-          serverAddress: result.address
-        }, 'Address mismatch between client and server derivation');
-        // We'll use the server's derived address as the source of truth
-      }
-    } catch (initError: any) {
-      // Wallet might already exist, which is OK
-      if (!initError.message.includes('already exists')) {
-        throw initError;
-      }
-      server.log.info({ userId: request.user.id }, 'Wallet already exists for user');
-    }
-
-    // Update the user's primaryAddress and walletDbPath in the database
+    // Update the user's primaryAddress in the database (no wallet import)
     const updatedUser = await prisma.user.update({
       where: { id: request.user.id },
       data: {
         primaryAddress: address,
-        walletDbPath: walletDbPath,
       },
       select: {
         id: true,
@@ -781,15 +965,17 @@ server.post<{ Body: { address: string; mnemonic: string } }>('/me/wallet', async
     });
 
     return updatedUser;
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to initialize wallet');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to link wallet address');
     reply.code(500);
-    return { error: error.message || 'Failed to initialize wallet' };
+    return { error: getErrorMessage(error) || 'Failed to link wallet address' };
   }
 });
 
-// Get all users
+// Get all users - ADMIN ONLY to prevent user enumeration
 server.get('/users', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+
   const users = await prisma.user.findMany({
     select: {
       id: true,
@@ -808,7 +994,7 @@ server.get('/users', async (request, reply) => {
  * @returns The result from the RPC call
  * @throws Error if the RPC call fails
  */
-async function callZcashRPC<T = any>(method: string, params: any[] = []): Promise<T> {
+async function callZcashRPC<T = unknown>(method: string, params: unknown[] = []): Promise<T> {
   if (!ZCASH_RPC_URL) {
     throw new Error('ZCASH_RPC_URL is not configured');
   }
@@ -820,13 +1006,23 @@ async function callZcashRPC<T = any>(method: string, params: any[] = []): Promis
     params,
   };
 
-  const response = await fetch(ZCASH_RPC_URL, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(rpcRequest),
-  });
+  // Add timeout to prevent hanging (30 seconds for blockchain operations)
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  let response: Response;
+  try {
+    response = await fetch(ZCASH_RPC_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(rpcRequest),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     const errorBody = await response.text();
@@ -884,13 +1080,14 @@ server.post<{ Body: { txHex: string } }>('/zcash/broadcast', async (request, rep
 
     // Return the transaction ID
     return { txid };
-  } catch (error: any) {
+  } catch (error) {
     // Log the error for debugging
-    server.log.error({ error: error.message }, 'Failed to broadcast transaction');
+    const errorMsg = getErrorMessage(error);
+    server.log.error({ error: errorMsg }, 'Failed to broadcast transaction');
 
     // Return error response
     reply.code(500);
-    return { error: error.message || 'Failed to broadcast transaction' };
+    return { error: errorMsg || 'Failed to broadcast transaction' };
   }
 });
 
@@ -929,10 +1126,10 @@ server.get('/zcash/network-info', async (request, reply) => {
     };
 
     return result;
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to fetch Zcash network info');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to fetch Zcash network info');
     reply.code(500);
-    return { error: error.message || 'Failed to fetch Zcash network info' };
+    return { error: getErrorMessage(error) || 'Failed to fetch Zcash network info' };
   }
 });
 
@@ -945,12 +1142,12 @@ server.get('/wallet/address', async (request, reply) => {
   }
   try {
     const walletDbPath = getUserWalletDbPath(request.user.id);
-    const address = await wallet.getPrimaryAddress(walletDbPath);
+    const address = await getPrimaryAddress(walletDbPath);
     return { address };
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to get wallet address');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to get wallet address');
     reply.code(500);
-    return { error: error.message || 'Failed to get wallet address' };
+    return { error: getErrorMessage(error) || 'Failed to get wallet address' };
   }
 });
 
@@ -962,12 +1159,12 @@ server.get('/wallet/balance', async (request, reply) => {
   }
   try {
     const walletDbPath = getUserWalletDbPath(request.user.id);
-    const balance = await wallet.getBalance(walletDbPath);
+    const balance = await getBalance(walletDbPath);
     return { balance_zatoshis: balance };
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to get wallet balance');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to get wallet balance');
     reply.code(500);
-    return { error: error.message || 'Failed to get wallet balance' };
+    return { error: getErrorMessage(error) || 'Failed to get wallet balance' };
   }
 });
 
@@ -981,14 +1178,14 @@ server.post('/wallet/sync', async (request, reply) => {
     const walletDbPath = getUserWalletDbPath(request.user.id);
     const result = await syncWallet(walletDbPath);
     return result;
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to sync wallet');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to sync wallet');
     reply.code(500);
-    return { error: error.message || 'Failed to sync wallet' };
+    return { error: getErrorMessage(error) || 'Failed to sync wallet' };
   }
 });
 
-server.get('/messages', async (request, reply) => {
+server.get<{ Querystring: { sinceHeight?: string } }>('/messages', async (request, reply) => {
   await authenticate(request, reply);
   if (!request.user) {
     reply.code(401);
@@ -996,15 +1193,15 @@ server.get('/messages', async (request, reply) => {
   }
   try {
     const walletDbPath = getUserWalletDbPath(request.user.id);
-    const sinceHeight = request.query && typeof (request.query as any).sinceHeight === 'string'
-      ? parseInt((request.query as any).sinceHeight, 10)
+    const sinceHeight = request.query.sinceHeight
+      ? parseInt(request.query.sinceHeight, 10)
       : undefined;
     const result = await getMessages(walletDbPath, sinceHeight);
     return result;
-  } catch (error: any) {
-    server.log.error({ error: error.message }, 'Failed to get messages');
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to get messages');
     reply.code(500);
-    return { error: error.message || 'Failed to get messages' };
+    return { error: getErrorMessage(error) || 'Failed to get messages' };
   }
 });
 
@@ -1043,6 +1240,14 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
     return { error: 'amount is required and must be a positive number (in zatoshis)' };
   }
 
+  // Max amount validation: 21 million ZEC = 2.1e15 zatoshis (#R3-H4)
+  // Use Number.MAX_SAFE_INTEGER as upper bound for safety
+  const MAX_ZATOSHIS = 2_100_000_000_000_000; // 21 million ZEC
+  if (amount > MAX_ZATOSHIS || !Number.isInteger(amount)) {
+    reply.code(400);
+    return { error: 'amount must be a valid integer within Zcash supply limits' };
+  }
+
   if (typeof memo !== 'string') {
     reply.code(400);
     return { error: 'memo must be a string' };
@@ -1051,7 +1256,7 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
   try {
     // Step 1: Build the transaction using wallet-core with per-user wallet
     const walletDbPath = getUserWalletDbPath(request.user.id);
-    const { txHex, txid } = await wallet.buildTransaction(walletDbPath, to, amount, memo);
+    const { txHex, txid } = await buildTransaction(walletDbPath, to, amount, memo);
 
     // Step 2: Broadcast the transaction
     // We'll call the existing broadcast endpoint logic
@@ -1059,25 +1264,57 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
 
     // Return the transaction ID
     return { txid: broadcastTxid || txid };
-  } catch (error: any) {
+  } catch (error) {
     // Log the error for debugging
-    server.log.error({ error: error.message }, 'Failed to send transaction');
+    const errorMsg = getErrorMessage(error);
+    server.log.error({ error: errorMsg }, 'Failed to send transaction');
 
     // Return error response
     reply.code(500);
-    return { error: error.message || 'Failed to send transaction' };
+    return { error: errorMsg || 'Failed to send transaction' };
   }
 });
+
+// Export server for testing
+export { server, prisma, jwtSecret, adminSecret };
+
+// Graceful shutdown handlers (LOW #B2)
+const gracefulShutdown = async (signal: string) => {
+  server.log.info({ signal }, 'Received shutdown signal, closing gracefully...');
+
+  try {
+    // Close Fastify server (stops accepting new connections)
+    await server.close();
+    server.log.info('HTTP server closed');
+
+    // Disconnect Prisma (check if method exists for test compatibility)
+    if (typeof prisma.$disconnect === 'function') {
+      await prisma.$disconnect();
+      server.log.info('Database disconnected');
+    }
+
+    process.exit(0);
+  } catch (err) {
+    server.log.error({ err }, 'Error during shutdown');
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const start = async () => {
   try {
     await server.listen({ port: 4000 });
-    console.log('Server listening on port 4000');
+    server.log.info('Server listening on port 4000'); // #R3-L1: Use server.log for consistency
   } catch (err) {
     server.log.error(err);
     process.exit(1);
   }
 };
 
-start();
+// Only start server if this is the main module (not imported for testing)
+if (require.main === module) {
+  start();
+}
 
