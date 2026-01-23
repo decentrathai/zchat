@@ -16,9 +16,27 @@ function getErrorMessage(error: unknown): string {
 }
 
 // Configuration from environment variables
-const WALLET_DB_BASE_DIR = process.env.WALLET_DB_BASE_DIR || '/home/yourt/zchat/wallet-db';
+// In production, all paths MUST be explicitly configured
+const isProduction = process.env.NODE_ENV === 'production';
+
+function getRequiredEnvOrDefault(name: string, devDefault: string): string {
+  const value = process.env[name];
+  if (value) return value;
+  if (isProduction) {
+    throw new Error(`${name} must be configured in production environment`);
+  }
+  return devDefault;
+}
+
+const WALLET_DB_BASE_DIR = getRequiredEnvOrDefault(
+  'WALLET_DB_BASE_DIR',
+  path.join(__dirname, '../../../wallet-db')  // Relative to project root in dev
+);
 const LIGHTWALLETD_URL = process.env.ZCASH_LIGHTWALLETD_URL || 'http://127.0.0.1:9067';
-const WALLET_CLI_BINARY = process.env.WALLET_CLI_BINARY || path.join(__dirname, '../../../target/release/zchat-wallet');
+const WALLET_CLI_BINARY = getRequiredEnvOrDefault(
+  'WALLET_CLI_BINARY',
+  path.join(__dirname, '../../../target/release/zchat-wallet')  // Relative path in dev
+);
 
 /**
  * Get the wallet database path for a specific user

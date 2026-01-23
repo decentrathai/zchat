@@ -1,7 +1,7 @@
 # Project: ZCHAT
 
-**Version:** 1.4
-**Last Updated:** 2026-01-19
+**Version:** 1.7
+**Last Updated:** 2026-01-22
 
 ## Overview
 ZCHAT is a privacy-first messaging application built on Zcash shielded transactions. Messages are sent via the memo field of shielded transactions, providing cryptographic privacy guarantees. The app supports direct messages, group chats, disappearing messages, and time-locked content. Future integration with NOSTR will add file sharing, audio messages, and voice/video calls.
@@ -17,7 +17,7 @@ ZCHAT is a privacy-first messaging application built on Zcash shielded transacti
 - Messages transmitted via Zcash memo field (512 bytes max)
 - ZMSG Protocol v4 for message formatting (DM, KEX, RXN, RCV, RPL, REQ, STT, CHK)
 - E2E encryption using secp256r1 ECDH + AES-256-GCM
-- HKDF (RFC 5869) for key derivation (P1 required - current code uses weak SHA-256)
+- HKDF (RFC 5869) for key derivation (implemented with V1/V2 versioning)
 - Room database for local message persistence
 - Single BIP39 seed derives both Zcash and NOSTR identities
 
@@ -131,7 +131,7 @@ See `DEVELOPMENT_STANDARDS.md` for complete reference with examples.
 /home/yourt/zchat/               # Main monorepo
 ├── apps/
 │   ├── backend/                 # Node.js API (port 4000)
-│   │   ├── src/routes/          # API endpoints
+│   │   ├── src/server.ts        # API endpoints (all routes)
 │   │   ├── prisma/              # Database schema
 │   │   └── package.json
 │   ├── web/                     # Next.js frontend (port 3000)
@@ -154,11 +154,18 @@ See `DEVELOPMENT_STANDARDS.md` for complete reference with examples.
 /home/yourt/zchat-android/       # Android app (Zashi fork) - PRIMARY
 ├── app/                         # Main Android module
 ├── ui-lib/                      # UI components (Compose)
-│   └── src/main/java/.../zchat/ # ZCHAT-specific code
-│       ├── E2EEncryption.kt     # E2E encryption
-│       ├── ZMSGProtocol.kt      # Message protocol
-│       ├── GroupViewModel.kt    # Group chat logic
-│       └── ChatViewModel.kt     # DM chat logic
+│   └── src/main/java/.../screen/chat/  # ZCHAT-specific code
+│       ├── crypto/
+│       │   └── E2EEncryption.kt     # E2E encryption
+│       ├── model/
+│       │   ├── ZMSGProtocol.kt      # Message protocol
+│       │   ├── ZMSGGroupProtocol.kt # Group protocol
+│       │   └── ZMSGConstants.kt     # Protocol constants
+│       ├── viewmodel/
+│       │   ├── ChatViewModel.kt     # DM chat logic
+│       │   └── GroupViewModel.kt    # Group chat logic
+│       └── datasource/
+│           └── ZchatPreferences.kt  # Preferences storage
 ├── ui-design-lib/               # Design system
 ├── sdk-ext-lib/                 # SDK extensions
 └── preference-*-lib/            # Preferences modules
@@ -218,7 +225,7 @@ Large messages split across multiple transactions, reassembled via `ChunkCache`.
 ### Test Commands
 
 ```bash
-# Backend tests (38 tests - API endpoints, auth, validation)
+# Backend tests (44 tests - API endpoints, auth, validation)
 cd /home/yourt/zchat/apps/backend && pnpm test
 
 # Web frontend tests (18 tests - utilities)
@@ -232,7 +239,7 @@ cd /home/yourt/zchat && pnpm test --filter backend && pnpm test --filter web
 
 | Platform | Tests | Status |
 |----------|-------|--------|
-| Backend API | 38 | ✅ Passing |
+| Backend API | 44 | ✅ Passing |
 | Web Frontend | 18 | ✅ Passing |
 | Android (ZCHAT) | 0 | ❌ CRITICAL GAP |
 
@@ -278,16 +285,16 @@ See `ANDROID_FIX_PLAN.md` → Testing Checklist section
 
 **Phase:** Implementation Phase - P1 Release Critical
 
-**P1 Tasks (14 hours remaining):**
-| Task | Status | Time |
-|------|--------|------|
-| HKDF key derivation | Not started | 3h |
-| Group history loading | Not started | 3h |
-| GROUP_LEAVE broadcast | 90% done (send path TODO) | 0.5h |
-| KEX protocol | Not started | 4h |
-| Group key ECIES | Not started | 4h |
-| sender_hash 12→16 chars | ✅ 12 chars adequate | - |
-| Backend mnemonic fix | ✅ COMPLETE | - |
+**P1 Tasks (Status as of 2026-01-20):**
+| Task | Status | Notes |
+|------|--------|-------|
+| HKDF key derivation | ✅ COMPLETE | RFC 5869, V1/V2 versioning |
+| Group history loading | ✅ COMPLETE | Load, decrypt, store |
+| GROUP_LEAVE broadcast | ✅ COMPLETE | Broadcast implemented |
+| KEX protocol | ✅ COMPLETE | Sign/verify, message format |
+| Group key ECIES | ✅ COMPLETE | Encrypt/decrypt group keys |
+| sender_hash collision | ✅ 12 chars adequate | ~48 bits entropy |
+| Backend mnemonic fix | ✅ COMPLETE | Removed from /me/wallet |
 
 **Completed:**
 - ✅ Product documentation (PRODUCT.md v2.0)
@@ -300,9 +307,13 @@ See `ANDROID_FIX_PLAN.md` → Testing Checklist section
 - ✅ Android test requirements documented (ANDROID_TEST_REQUIREMENTS.md)
 
 **Pending (P2+):**
-- Error handling improvements
-- Logging redaction
+- Error handling improvements (ZchatResult types implemented, integration ongoing)
 - NOSTR integration (48h estimated)
+
+**Recently Completed:**
+- ✅ Logging redaction (LogRedaction utility, address/key sanitization)
+- ✅ ZchatResult/ZchatError types for explicit error handling
+- ✅ Identity Regeneration (diversified addresses)
 
 See `IMPLEMENTATION_STEPS.md` for detailed task breakdown.
 
@@ -337,7 +348,7 @@ cp /home/yourt/zchat/SESSION_RESTART_PROMPT.md "/mnt/c/Users/yourt/OneDrive/Ра
 
 **Key verified facts (from hostile audit):**
 - Android seed storage is ALREADY SECURE (EncryptedSharedPreferences)
-- E2E key derivation uses weak SHA-256, needs HKDF (P1 fix)
+- E2E key derivation now uses HKDF (RFC 5869) with V1/V2 versioning ✅
 - Web app has NO ZMSG protocol - cannot interoperate with Android
 - Decision: Web app is secondary platform (Option C)
 
@@ -368,13 +379,14 @@ Check auto-recovery logs: `tail -50 /home/yourt/zchat-health.log`
 |---|---------|------|---------------|---------------|
 | 1 | **Cloudflare Tunnel** | - | `pgrep -f 'cloudflared tunnel'` | `nohup cloudflared tunnel run zchat > ~/cloudflared.log 2>&1 &` |
 | 2 | **Backend API** | 4000 | `curl -s http://localhost:4000` | `cd ~/zchat/apps/backend && nohup pnpm dev > ~/backend.log 2>&1 &` |
-| 3 | **Zebrad** | 8232 | `curl -s http://127.0.0.1:8232` | `nohup zebrad start > ~/zebrad.log 2>&1 &` |
-| 4 | **Lightwalletd** | 9067 | `pgrep -f lightwalletd` | See startup commands below |
-| 5 | **Web Frontend** | 3000 | `curl -s http://localhost:3000` | `cd ~/zchat/apps/web && nohup pnpm dev > ~/frontend.log 2>&1 &` |
+| 3 | **Landing Page** | 3002 | `curl -s http://localhost:3002` | `cd ~/zchat/apps/landing && nohup pnpm dev > ~/landing.log 2>&1 &` |
+| 4 | **Zebrad** | 8232 | `curl -s http://127.0.0.1:8232` | `nohup zebrad start > ~/zebrad.log 2>&1 &` |
+| 5 | **Lightwalletd** | 9067 | `pgrep -f lightwalletd` | See startup commands below |
+| 6 | **Web Frontend** | 3000 | `curl -s http://localhost:3000` | `cd ~/zchat/apps/web && nohup pnpm dev > ~/frontend.log 2>&1 &` |
 
 ### Why Each Service Matters
-- **Cloudflare Tunnel**: Routes `api.zsend.xyz`, `app.zsend.xyz` to local services. **Without it, API and web app are DOWN.**
-- **Cloudflare Pages**: Serves `zsend.xyz` landing page (deployed separately via wrangler).
+- **Cloudflare Tunnel**: Routes ALL zsend.xyz domains to local services. **Without it, everything is DOWN.**
+- **Landing Dev Server (port 3002)**: Serves zsend.xyz landing page via tunnel.
 - **Backend API**: Handles whitelist signups, admin dashboard, download codes. **Without it, no new signups work.**
 - **Zebrad**: Zcash blockchain node. Required for wallet operations.
 - **Lightwalletd**: gRPC interface for wallets. Required for Android app sync.
@@ -436,38 +448,48 @@ tail -50 /home/yourt/zchat-health.log
 
 ### Cloudflare
 
-#### Cloudflare Pages (Production Landing Page)
-**IMPORTANT:** The landing page (zsend.xyz) is served via **Cloudflare Pages**, NOT the tunnel!
+#### zsend.xyz Deployment (Cloudflare Tunnel)
+**ALL zsend.xyz sites are served via Cloudflare Tunnel, NOT Pages.**
 
-- **Project name:** `zsend`
-- **Domains:** zsend.xyz, www.zsend.xyz, zsend.pages.dev
-- **Source:** `/home/yourt/zchat/apps/landing/out` (static export)
+| Domain | Routes To | Service |
+|--------|-----------|---------|
+| `zsend.xyz` | localhost:3002 | Landing page (Next.js dev server) |
+| `app.zsend.xyz` | localhost:3000 | Web Frontend |
+| `api.zsend.xyz` | localhost:4000 | Backend API |
+| `lwd.zsend.xyz` | localhost:9067 | Lightwalletd gRPC |
 
-**To deploy landing page updates:**
+**Tunnel config:** `~/.cloudflared/config.yml`
+**Tunnel name:** `zchat`
+
+#### To Update zsend.xyz Landing Page:
 ```bash
-cd /home/yourt/zchat/apps/landing
-pnpm build
-npx wrangler pages deploy out --project-name zsend --commit-dirty=true
+# 1. Edit code in /home/yourt/zchat/apps/landing/
+# 2. Ensure landing dev server is running:
+cd /home/yourt/zchat/apps/landing && pnpm dev
+# 3. Changes are live immediately (dev server with HMR)
 ```
 
-**If wrangler auth expires (403 error):**
+#### If zsend.xyz Shows Old Content:
 ```bash
-npx wrangler login
-# Opens browser for OAuth - complete the login
-# Then retry the deploy command
+# Fix DNS to route through tunnel (not Pages):
+cloudflared tunnel route dns --overwrite-dns zchat zsend.xyz
 ```
 
-**Wrangler config:** `~/.config/.wrangler/config/default.toml`
+#### Tunnel Management:
+```bash
+# Check tunnel status
+pgrep -f "cloudflared tunnel" && echo "Running"
 
-#### Cloudflare Tunnel (Other Services)
-- Tunnel name: `zchat`
-- Config: `~/.cloudflared/config.yml`
-- Routes:
-  - `app.zsend.xyz` → localhost:3000 (Web Frontend)
-  - `api.zsend.xyz` → localhost:4000 (Backend API)
-  - `lwd.zsend.xyz` → localhost:9067 (Lightwalletd gRPC)
+# Restart tunnel
+pkill -f "cloudflared tunnel"
+nohup cloudflared tunnel run zchat > ~/cloudflared.log 2>&1 &
+```
 
-**Note:** `zsend.xyz` is configured in tunnel but Cloudflare Pages takes priority. The tunnel config for zsend.xyz (localhost:3002) is only used for local development/testing.
+#### Wrangler (NOT used for zsend.xyz):
+Wrangler/Pages is NOT used for zsend.xyz deployment. Only use if needed for other Cloudflare services.
+```bash
+npx wrangler login  # Re-auth if needed
+```
 
 ## Project Structure
 ```
@@ -571,6 +593,74 @@ cloudflared tunnel run zchat
 ---
 ## Session Notes
 
+### 2026-01-21 (Continuation) - P2 Quality Improvements
+
+**Completed:**
+- ✅ Created ZchatResult<T, E> sealed class with fold, map, flatMap, zip
+- ✅ Created ZchatError sealed class hierarchy (Network, Wallet, Crypto, Protocol, Identity, Group)
+- ✅ Created LogRedaction.kt (redactAddress, redactSeed, redactKey, redactTxId, etc.)
+- ✅ Build successful, APK at Windows Downloads
+
+**New Files:**
+- `ui-lib/src/main/java/.../common/result/ZchatResult.kt`
+- `ui-lib/src/main/java/.../common/result/ZchatError.kt`
+- `ui-lib/src/main/java/.../common/util/LogRedaction.kt`
+
+---
+
+### 2026-01-21 - Identity Regeneration Feature Complete
+
+**Completed:**
+- ✅ Implemented Identity Regeneration (Masks) system per user request
+- ✅ Created IdentityManager with SharedPreferences storage
+- ✅ Two modes: Diversified Address (can switch back) and Full Reset (permanent)
+- ✅ Added ADDR protocol for address change notifications
+- ✅ Complete UI with mode selection, notification options, confirmation dialogs
+- ✅ Build successful, APK at Windows Downloads
+
+**New Files:**
+- `ui-lib/src/main/java/.../changeidentity/` - 5 new files (State, View, VM, Screen, IdentityManager)
+
+**Modified Files:**
+- ZMSGProtocol.kt, ZMSGConstants.kt, ZchatPreferences.kt
+- DataSourceModule.kt, ViewModelModule.kt, WalletNavGraph.kt, MoreVM.kt
+
+**Access:** Settings → More → "Change Identity"
+
+**TODO (P2):** Actual ADDR transaction sending, identity switching UI, per-identity conversation storage
+
+---
+
+### 2026-01-20 (Continuation) - Hostile Audit & Documentation Fixes
+
+**Completed:**
+- ✅ Cleaned old APKs (kept latest build only)
+- ✅ Fixed dashboard auth issue (localStorage had invalid admin secret)
+- ✅ Fixed CONV_ID_LENGTH documentation (docs said 12, code uses 8)
+- ✅ Backend tests: 44 passing, Web tests: 18 passing
+- ✅ E2EEncryption.kt edge case audit completed
+
+**Documentation Fixes:**
+- CONV_ID_LENGTH: 8 chars (not 12 as documented) - updated 7 files
+- Character set: A-Z, 0-9 (36 chars, uppercase only)
+- ~41 bits entropy - adequate for ZCHAT scale (<100K conversations)
+- DEC-006 wording corrected: "planned to increase" not "incorrectly stated"
+
+**Crypto Audit Findings (P2/P3):**
+- CRITICAL: SharedKey/nonce length not validated
+- HIGH: Base64 decode exceptions uncaught, ECIES null salt
+- MEDIUM: Broad exception catching, silent auth failures
+
+**P1 Status Update:**
+- ✅ HKDF: Complete (RFC 5869, V1/V2 versioning)
+- ✅ KEX: Core complete (sign/verify, message format)
+- ✅ ECIES: Core complete (encrypt/decrypt group keys)
+- ✅ GROUP_LEAVE: Complete (broadcast implemented)
+- ✅ Group History: Complete (load, decrypt, store)
+- ⏳ Integration: KEX/ECIES handlers in ViewModels
+
+---
+
 ### 2026-01-20 - Phase 7 Audit Complete
 
 **Phase 7 Audit Results:**
@@ -578,7 +668,7 @@ cloudflared tunnel run zchat
 **Documentation Consistency:**
 - ✅ Fixed DEC-015: sender_hash is 12 chars (documented as 8→16, reality is 12)
 - ✅ Fixed DEC-016: Marked as COMPLETE (mnemonic removal already done)
-- ⚠️ HKDF still uses SHA-256 only - P1 fix needed
+- ✅ HKDF implemented with RFC 5869 compliance (V1/V2 versioning)
 
 **Test Suite:**
 - ✅ Backend: 38 tests passing
@@ -587,7 +677,7 @@ cloudflared tunnel run zchat
 
 **Security Hostile Audit Findings:**
 - HIGH: Debug logging exposes convIDs and peer addresses (ChatViewModel.kt, ZchatPreferences.kt)
-- HIGH: E2E private keys stored as plaintext in SharedPreferences
+- ✅ FIXED: E2E private keys now stored in EncryptedSharedPreferences (AES256-GCM)
 - MEDIUM: No certificate pinning for external APIs
 - Crypto: Uses ECDH + AES-GCM (acceptable), but key derivation needs HKDF
 

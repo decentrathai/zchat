@@ -1068,7 +1068,14 @@ server.post<{ Body: { txHex: string } }>('/zcash/broadcast', async (request, rep
     return { error: 'txHex is required and must be a string' };
   }
 
-  // Validate hex format (basic check)
+  // Validate hex format and length
+  // Max 100KB hex = 50KB raw transaction (Zcash txs are typically 2-10KB)
+  const MAX_TX_HEX_LENGTH = 200000;
+  if (txHex.length > MAX_TX_HEX_LENGTH) {
+    reply.code(400);
+    return { error: `txHex exceeds maximum length of ${MAX_TX_HEX_LENGTH} characters` };
+  }
+
   if (!/^[0-9a-fA-F]+$/.test(txHex)) {
     reply.code(400);
     return { error: 'txHex must be a valid hexadecimal string' };
@@ -1272,6 +1279,173 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
     // Return error response
     reply.code(500);
     return { error: errorMsg || 'Failed to send transaction' };
+  }
+});
+
+// =====================
+// CONTACT FORM ENDPOINT
+// =====================
+
+/**
+ * Submit a contact form message
+ *
+ * POST /contact
+ * Body: { name: string, email: string, message: string }
+ *
+ * Public endpoint - no auth required
+ */
+server.post<{ Body: { name: string; email: string; message: string } }>('/contact', async (request, reply) => {
+  const { name, email, message } = request.body;
+
+  // Validate name
+  if (!name || typeof name !== 'string' || name.trim().length < 2) {
+    reply.code(400);
+    return { error: 'Name is required (at least 2 characters)' };
+  }
+  if (name.length > 100) {
+    reply.code(400);
+    return { error: 'Name is too long (max 100 characters)' };
+  }
+
+  // Validate email
+  if (!email || typeof email !== 'string') {
+    reply.code(400);
+    return { error: 'Email is required' };
+  }
+  if (email.length > 254) {
+    reply.code(400);
+    return { error: 'Email is too long (max 254 characters)' };
+  }
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    reply.code(400);
+    return { error: 'Invalid email format' };
+  }
+
+  // Validate message
+  if (!message || typeof message !== 'string' || message.trim().length < 10) {
+    reply.code(400);
+    return { error: 'Message is required (at least 10 characters)' };
+  }
+  if (message.length > 5000) {
+    reply.code(400);
+    return { error: 'Message is too long (max 5000 characters)' };
+  }
+
+  try {
+    // Store in database
+    const submission = await prisma.contactSubmission.create({
+      data: {
+        name: name.trim(),
+        email: email.toLowerCase().trim(),
+        message: message.trim(),
+      },
+    });
+
+    server.log.info({ id: submission.id, email: email.toLowerCase().trim() }, 'New contact form submission');
+
+    // Send email notification (non-blocking)
+    const CONTACT_NOTIFICATION_EMAIL = process.env.CONTACT_NOTIFICATION_EMAIL || 'btcpresent@gmail.com';
+
+    if (resend) {
+      const safeName = escapeHtml(name.trim());
+      const safeEmail = escapeHtml(email.toLowerCase().trim());
+      const safeMessage = escapeHtml(message.trim());
+      const timestamp = new Date().toISOString();
+
+      resend.emails.send({
+        from: 'ZCHAT Contact <noreply@zsend.xyz>',
+        to: CONTACT_NOTIFICATION_EMAIL,
+        replyTo: email.toLowerCase().trim(),
+        subject: `📬 New Contact Form: ${safeName}`,
+        html: `
+          <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; background: #050510; color: #fff;">
+            <h2 style="color: #22d3ee; margin-bottom: 20px;">New Contact Form Submission</h2>
+
+            <div style="background: rgba(34,211,238,0.1); border: 1px solid rgba(34,211,238,0.3); border-radius: 12px; padding: 20px; margin-bottom: 20px;">
+              <p style="margin: 0 0 12px 0;"><strong style="color: #22d3ee;">Name:</strong> ${safeName}</p>
+              <p style="margin: 0 0 12px 0;"><strong style="color: #22d3ee;">Email:</strong> <a href="mailto:${safeEmail}" style="color: #22d3ee;">${safeEmail}</a></p>
+              <p style="margin: 0;"><strong style="color: #22d3ee;">Time:</strong> ${timestamp}</p>
+            </div>
+
+            <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 20px;">
+              <h3 style="color: #22d3ee; margin: 0 0 12px 0;">Message:</h3>
+              <p style="color: #d1d5db; line-height: 1.6; white-space: pre-wrap; margin: 0;">${safeMessage}</p>
+            </div>
+
+            <hr style="border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 24px 0;">
+            <p style="color: #6b7280; font-size: 12px; margin: 0;">
+              Reply directly to this email to respond to ${safeName}.
+            </p>
+          </div>
+        `,
+      }).catch(err => {
+        server.log.error({ err }, 'Failed to send contact notification email');
+      });
+    }
+
+    return {
+      success: true,
+      message: 'Thank you for your message! We will get back to you soon.',
+    };
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to submit contact form');
+    reply.code(500);
+    return { error: 'Failed to submit your message. Please try again.' };
+  }
+});
+
+/**
+ * List all contact submissions (admin only)
+ *
+ * GET /admin/contacts
+ * Headers: X-Admin-Secret: <admin_secret>
+ */
+server.get('/admin/contacts', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+
+  try {
+    const submissions = await prisma.contactSubmission.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return { submissions };
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to fetch contact submissions');
+    reply.code(500);
+    return { error: 'Failed to fetch contact submissions' };
+  }
+});
+
+/**
+ * Mark a contact submission as read (admin only)
+ *
+ * POST /admin/contacts/:id/read
+ * Headers: X-Admin-Secret: <admin_secret>
+ */
+server.post<{ Params: { id: string } }>('/admin/contacts/:id/read', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+
+  const id = parseInt(request.params.id, 10);
+  if (isNaN(id)) {
+    reply.code(400);
+    return { error: 'Invalid submission ID' };
+  }
+
+  try {
+    const submission = await prisma.contactSubmission.update({
+      where: { id },
+      data: {
+        read: true,
+        readAt: new Date(),
+      },
+    });
+
+    return { success: true, submission };
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Failed to mark submission as read');
+    reply.code(500);
+    return { error: 'Failed to mark submission as read' };
   }
 });
 
