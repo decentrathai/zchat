@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
-import { Lock, LogIn, Users, Mail, Key, Check, X, Clock, Send, RefreshCw } from "lucide-react"
+import { Lock, LogIn, Users, Mail, Key, Check, X, Clock, Send, RefreshCw, Trash2, MessageSquare } from "lucide-react"
 
 interface WhitelistEntry {
   id: number
@@ -32,6 +32,10 @@ export default function AdminPage() {
   const [generating, setGenerating] = useState(false)
   const [sendingEmail, setSendingEmail] = useState(false)
   const [message, setMessage] = useState<{ type: "success" | "error"; text: string } | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<WhitelistEntry | null>(null)
+  const [approveModal, setApproveModal] = useState<WhitelistEntry | null>(null)
+  const [customMessage, setCustomMessage] = useState("")
 
   // Check for existing session
   useEffect(() => {
@@ -150,7 +154,7 @@ export default function AdminPage() {
     }
   }
 
-  const generateAndSendCode = async (entry: WhitelistEntry) => {
+  const generateAndSendCode = async (entry: WhitelistEntry, customMsg?: string) => {
     setGenerating(true)
     setSendingEmail(true)
     setMessage(null)
@@ -171,14 +175,14 @@ export default function AdminPage() {
         return
       }
 
-      // Then send the email
+      // Then send the email with optional custom message
       const emailResponse = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}/send-code-email`, {
         method: "POST",
         headers: {
           "X-Admin-Secret": adminSecret,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ code: genData.code }),
+        body: JSON.stringify({ code: genData.code, customMessage: customMsg || undefined }),
       })
       const emailData = await emailResponse.json()
 
@@ -194,6 +198,34 @@ export default function AdminPage() {
     } finally {
       setGenerating(false)
       setSendingEmail(false)
+      setApproveModal(null)
+      setCustomMessage("")
+    }
+  }
+
+  const deleteEntry = async (entry: WhitelistEntry) => {
+    setDeleting(true)
+    setMessage(null)
+    try {
+      const response = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}`, {
+        method: "DELETE",
+        headers: {
+          "X-Admin-Secret": adminSecret,
+        },
+      })
+      const data = await response.json()
+
+      if (data.success) {
+        setMessage({ type: "success", text: `Entry for ${entry.email} deleted` })
+        loadEntries()
+      } else {
+        setMessage({ type: "error", text: data.error || "Failed to delete entry" })
+      }
+    } catch {
+      setMessage({ type: "error", text: "Failed to delete entry" })
+    } finally {
+      setDeleting(false)
+      setDeleteConfirm(null)
     }
   }
 
@@ -392,7 +424,7 @@ export default function AdminPage() {
                       <div className="flex items-center gap-2">
                         {entry.status === "pending" && (
                           <Button
-                            onClick={() => generateAndSendCode(entry)}
+                            onClick={() => setApproveModal(entry)}
                             size="sm"
                             className="bg-cyan-500 text-black hover:bg-cyan-400 text-xs"
                             disabled={generating || sendingEmail}
@@ -427,6 +459,16 @@ export default function AdminPage() {
                             </Button>
                           </>
                         )}
+                        {/* Delete button - always visible */}
+                        <Button
+                          onClick={() => setDeleteConfirm(entry)}
+                          size="sm"
+                          variant="outline"
+                          className="border-red-500/30 text-red-400 hover:bg-red-500/10 text-xs"
+                          disabled={deleting}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -443,6 +485,101 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
+
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-xl border border-red-500/30 bg-gray-900 p-6 shadow-xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-red-500/20">
+                <Trash2 className="h-5 w-5 text-red-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white">Delete Entry</h3>
+            </div>
+            <p className="text-gray-300 mb-2">
+              Are you sure you want to delete this entry?
+            </p>
+            <p className="text-sm text-gray-400 mb-6">
+              <strong className="text-white">{deleteConfirm.email}</strong>
+              <br />
+              This will also delete all associated download codes.
+            </p>
+            <div className="flex gap-3">
+              <Button
+                onClick={() => setDeleteConfirm(null)}
+                variant="outline"
+                className="flex-1 border-gray-600 text-gray-400 hover:bg-gray-800"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => deleteEntry(deleteConfirm)}
+                className="flex-1 bg-red-500 text-white hover:bg-red-600"
+                disabled={deleting}
+              >
+                {deleting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Approve Modal with Custom Message */}
+      {approveModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-xl border border-cyan-500/30 bg-gray-900 p-6 shadow-xl">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-cyan-500/20">
+                <Send className="h-5 w-5 text-cyan-400" />
+              </div>
+              <h3 className="text-lg font-semibold text-white">Approve & Send Code</h3>
+            </div>
+
+            <div className="mb-4 p-3 rounded-lg bg-gray-800/50">
+              <p className="text-sm text-gray-400">Sending to:</p>
+              <p className="text-white font-medium">{approveModal.email}</p>
+              <p className="text-xs text-gray-500 mt-1 line-clamp-2">{approveModal.reason}</p>
+            </div>
+
+            <div className="mb-4">
+              <label className="flex items-center gap-2 text-sm font-medium text-gray-300 mb-2">
+                <MessageSquare className="w-4 h-4" />
+                Personal Message (optional)
+              </label>
+              <textarea
+                value={customMessage}
+                onChange={(e) => setCustomMessage(e.target.value)}
+                placeholder="Add a personal note to the approval email...&#10;&#10;Example: Thanks for your interest! We're excited to have you test ZCHAT. Feel free to reach out on X if you have any questions."
+                rows={4}
+                className="w-full rounded-lg border border-gray-700 bg-gray-800 px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500 text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                This message will appear in the email after the congratulations banner.
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <Button
+                onClick={() => {
+                  setApproveModal(null)
+                  setCustomMessage("")
+                }}
+                variant="outline"
+                className="flex-1 border-gray-600 text-gray-400 hover:bg-gray-800"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => generateAndSendCode(approveModal, customMessage.trim() || undefined)}
+                className="flex-1 bg-cyan-500 text-black hover:bg-cyan-400"
+                disabled={generating || sendingEmail}
+              >
+                {generating || sendingEmail ? "Sending..." : "Approve & Send"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   )
 }

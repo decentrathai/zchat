@@ -1,9 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
@@ -15,31 +9,41 @@ datasource db {
 }
 
 model User {
-  id             Int       @id @default(autoincrement())
-  username       String    @unique
+  id             Int      @id @default(autoincrement())
+  username       String   @unique
+  createdAt      DateTime @default(now())
   passwordHash   String
   primaryAddress String?
-  walletDbPath   String?   // Per-user wallet database path
-  createdAt      DateTime  @default(now())
+  walletDbPath   String?
 }
 
 model Whitelist {
-  id           Int            @id @default(autoincrement())
-  email        String         @unique
-  reason       String         // Why they want to test
-  status       String         @default("pending") // pending, approved, rejected
-  createdAt    DateTime       @default(now())
-  approvedAt   DateTime?
+  id            Int            @id @default(autoincrement())
+  email         String         @unique
+  reason        String
+  status        String         @default("pending")
+  createdAt     DateTime       @default(now())
+  approvedAt    DateTime?
   downloadCodes DownloadCode[]
 }
 
 model DownloadCode {
   id          Int       @id @default(autoincrement())
-  code        String    @unique // The secret code user enters
+  code        String    @unique
   whitelistId Int
-  whitelist   Whitelist @relation(fields: [whitelistId], references: [id])
   used        Boolean   @default(false)
   usedAt      DateTime?
   createdAt   DateTime  @default(now())
-  expiresAt   DateTime  // Codes expire after some time
+  expiresAt   DateTime
+  whitelist   Whitelist @relation(fields: [whitelistId], references: [id])
+}
+
+model ContactSubmission {
+  id        Int      @id @default(autoincrement())
+  name      String
+  email     String
+  message   String
+  createdAt DateTime @default(now())
+  read      Boolean  @default(false)
+  readAt    DateTime?
 }

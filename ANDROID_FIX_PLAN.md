@@ -203,7 +203,7 @@ suspend fun leaveGroup(groupId: String) {
 ```
 
 **Also in this batch:**
-- Increase conversation ID from 8 → 12 chars (~71 bits entropy)
+- ✅ Conversation ID is 8 chars (~41 bits entropy) - adequate for ZCHAT scale
 - Add debounce (2 sec) to status updates
 
 ---

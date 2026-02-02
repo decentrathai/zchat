@@ -190,6 +190,21 @@ const server = Fastify({
   bodyLimit: 1048576, // 1MB max body size (MEDIUM #B2)
 });
 
+// Custom JSON parser that handles empty bodies (for DELETE requests)
+server.removeContentTypeParser('application/json');
+server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+  if (!body || body === '') {
+    done(null, {});
+    return;
+  }
+  try {
+    const json = JSON.parse(body as string);
+    done(null, json);
+  } catch (err) {
+    done(err as Error, undefined);
+  }
+});
+
 // CORS configuration - restrict to known origins in production
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'https://app.zsend.xyz',
@@ -213,7 +228,8 @@ server.register(cors, {
 
     return cb(new Error('Not allowed by CORS'), false);
   },
-  credentials: true
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH']
 });
 
 // Rate limiting to prevent abuse (HIGH #B1)
@@ -493,19 +509,63 @@ server.post<{ Params: { id: string }; Body: { expiresInDays?: number } }>(
 );
 
 /**
+ * Delete a whitelist entry (admin only)
+ *
+ * DELETE /admin/whitelist/:id
+ * Headers: X-Admin-Secret: <admin_secret>
+ */
+server.delete<{ Params: { id: string } }>(
+  '/admin/whitelist/:id',
+  async (request, reply) => {
+    await authenticateAdmin(request, reply);
+
+    const whitelistId = parseInt(request.params.id, 10);
+
+    if (isNaN(whitelistId)) {
+      reply.code(400);
+      return { error: 'Invalid whitelist ID' };
+    }
+
+    try {
+      // Delete associated download codes first (due to foreign key constraint)
+      await prisma.downloadCode.deleteMany({
+        where: { whitelistId },
+      });
+
+      // Delete the whitelist entry
+      await prisma.whitelist.delete({
+        where: { id: whitelistId },
+      });
+
+      server.log.info({ whitelistId }, 'Whitelist entry deleted');
+
+      return { success: true, message: 'Entry deleted successfully' };
+    } catch (error) {
+      if (getPrismaErrorCode(error) === 'P2025') {
+        reply.code(404);
+        return { error: 'Whitelist entry not found' };
+      }
+      server.log.error({ error: getErrorMessage(error) }, 'Failed to delete whitelist entry');
+      reply.code(500);
+      return { error: 'Failed to delete entry' };
+    }
+  }
+);
+
+/**
  * Send download code email to a whitelist user (admin only)
  *
  * POST /admin/whitelist/:id/send-code-email
  * Headers: X-Admin-Secret: <admin_secret>
- * Body: { code: string }
+ * Body: { code: string, customMessage?: string }
  */
-server.post<{ Params: { id: string }; Body: { code: string } }>(
+server.post<{ Params: { id: string }; Body: { code: string; customMessage?: string } }>(
   '/admin/whitelist/:id/send-code-email',
   async (request, reply) => {
     await authenticateAdmin(request, reply);
 
     const whitelistId = parseInt(request.params.id, 10);
-    const { code } = request.body;
+    const { code, customMessage } = request.body;
 
     if (isNaN(whitelistId)) {
       reply.code(400);
@@ -559,6 +619,13 @@ server.post<{ Params: { id: string }; Body: { code: string } }>(
                 <h2 style="color: #22d3ee; font-size: 20px; margin: 0 0 8px 0;">Congratulations!</h2>
                 <p style="color: #d1d5db; margin: 0; font-size: 15px;">You're now part of our exclusive testing team</p>
               </div>
+
+              ${customMessage ? `
+              <!-- Personal Message from Admin -->
+              <div style="background: rgba(139,92,246,0.1); border-left: 3px solid #a855f7; border-radius: 0 8px 8px 0; padding: 16px 20px; margin-bottom: 24px;">
+                <p style="color: #d1d5db; margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${escapeHtml(customMessage)}</p>
+              </div>
+              ` : ''}
 
               <!-- Main Content -->
               <div style="background: linear-gradient(135deg, rgba(34,211,238,0.1) 0%, rgba(139,92,246,0.05) 100%); border: 1px solid rgba(34,211,238,0.3); border-radius: 16px; padding: 32px;">

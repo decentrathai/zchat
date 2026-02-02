@@ -311,9 +311,9 @@ export default function Home() {
       localStorage.setItem('authToken', loginResponse.token);
 
       // Step 6: Link wallet address to account on backend
-      // Also pass the mnemonic so backend can import the wallet for per-user wallet database
+      // Note: Mnemonic stays client-side only for security
       try {
-        await linkWalletAddress(loginResponse.token, address, mnemonic);
+        await linkWalletAddress(loginResponse.token, address);
         setAuthMessage('Wallet created! Your seed phrase is shown in the sidebar. Please back it up!');
       } catch (error: any) {
         setAuthMessage(`Wallet created, but failed to link address: ${error.message}`);
@@ -437,11 +437,11 @@ export default function Home() {
       setConversations([]);
       setSelectedPeerAddress(null);
 
-      // 7) Call linkWalletAddress to update backend with mnemonic for per-user wallet
+      // 7) Call linkWalletAddress to update backend (address only, mnemonic stays client-side)
       const token = getAuthToken();
       if (token) {
         try {
-          await linkWalletAddress(token, newAddress, mnemonic);
+          await linkWalletAddress(token, newAddress);
           setWalletActionStatus('Wallet regenerated successfully');
           // Show seed phrase after regeneration
           setShowSeed(true);
@@ -552,9 +552,9 @@ export default function Home() {
       localStorage.removeItem('seedBackedUp');
       setSeedBackedUp(false);
 
-      // Link new address to backend with mnemonic for per-user wallet
+      // Link new address to backend (address only, mnemonic stays client-side)
       try {
-        await linkWalletAddress(token, newAddress, mnemonic);
+        await linkWalletAddress(token, newAddress);
         setWalletActionStatus(`Rotation complete: ${successCount} sent, ${errorCount} failed`);
         // Show seed phrase after regeneration
         setShowSeed(true);

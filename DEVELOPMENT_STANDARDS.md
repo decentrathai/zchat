@@ -441,8 +441,8 @@ value class ConversationId private constructor(val value: String) {
         }
 
         fun generate(): ConversationId {
-            val chars = ('a'..'z') + ('A'..'Z') + ('0'..'9')
-            return ConversationId((1..12).map { chars.random() }.joinToString(""))
+            val chars = ('A'..'Z') + ('0'..'9')  // Uppercase + digits only
+            return ConversationId((1..8).map { chars.random() }.joinToString(""))
         }
     }
 }
@@ -901,7 +901,7 @@ const SendMessageRequestSchema = z.object({
   ),
   content: z.string().min(1).max(500),
   amount: z.number().int().min(0).optional(),
-  convId: z.string().regex(/^[a-zA-Z0-9]{12}$/),
+  convId: z.string().regex(/^[A-Z0-9]{8}$/),  // 8 uppercase alphanumeric
 });
 ```
 

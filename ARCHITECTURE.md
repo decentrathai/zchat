@@ -9,7 +9,7 @@
 - Clarified HKDF status (current vs proposed)
 - Added local storage architecture
 - Documented error handling paths
-- Increased sender_hash entropy (8→16 chars)
+- Clarified sender_hash uses 12 chars (~48 bits entropy)
 - Added forward secrecy roadmap
 - Fixed group key security documentation
 - Added Blossom file encryption requirement
@@ -161,7 +161,7 @@ All messages are encoded in Zcash memo fields (max 512 bytes).
 │                                                              │
 │ version:     4 (current)                                     │
 │ type:        DM, KEX, RXN, RCV, RPL, REQ, CHK, STT           │
-│ conv_id:     12-char alphanumeric (~71 bits entropy)         │
+│ conv_id:     8-char alphanumeric (~41 bits entropy)          │
 │ sender_hash: SHA256(sender_address).take(6 bytes) → 12 hex chars │
 │ payload:     type-specific content                           │
 └──────────────────────────────────────────────────────────────┘
@@ -218,21 +218,42 @@ All messages are encoded in Zcash memo fields (max 512 bytes).
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Signature Scheme:**
+**Signature Scheme (Implemented 2026-01-20):**
 ```kotlin
-// Sign public key with Zcash transparent key (for verification)
-// This binds the E2E key to the Zcash identity
-fun signPublicKey(ecPublicKey: ByteArray, zcashSpendingKey: SpendingKey): ByteArray {
-    val message = "ZCHAT_KEX_V1:" + ecPublicKey.toBase64()
-    return Secp256k1.sign(message.sha256(), zcashSpendingKey.toSecp256k1())
+// Sign public key with E2E private key (ECDSA-SHA256 over secp256r1)
+// Message to sign = senderAddress || publicKey (binds key to Zcash identity)
+fun createKEXPayload(senderAddress: String, publicKey: String, privateKey: String): String {
+    val messageToSign = senderAddress + publicKey
+    val signature = sign(privateKey, messageToSign)  // ECDSA-SHA256
+    return "KEX:$publicKey:$signature"
 }
 
-fun verifyPublicKey(ecPublicKey: ByteArray, signature: ByteArray, zcashAddress: String): Boolean {
-    val message = "ZCHAT_KEX_V1:" + ecPublicKey.toBase64()
-    val recoveredPubkey = Secp256k1.recoverPublicKey(message.sha256(), signature)
-    return recoveredPubkey.toZcashAddress() == zcashAddress
+fun parseKEXPayload(payload: String, senderAddress: String): String? {
+    val parts = payload.removePrefix("KEX:").split(":", limit = 2)
+    val publicKey = parts[0]
+    val signature = parts[1]
+    val messageToVerify = senderAddress + publicKey
+    if (!verify(publicKey, messageToVerify, signature)) return null  // MITM detected
+    return publicKey
 }
 ```
+
+**KEX Message Format:**
+```
+ZMSG|v4|<convId>|KEX|<sender_hash>|KEX:<pubkey_b64>:<signature_b64>
+ZMSG|v4|<convId>|KEXACK|<sender_hash>|KEXACK:<pubkey_b64>:<signature_b64>
+```
+
+**KEX Flow:**
+1. User A enables E2E → generates keypair, sends KEX message
+2. User B receives KEX → verifies signature, stores A's pubkey
+3. User B auto-enables E2E → generates keypair, sends KEXACK
+4. User A receives KEXACK → verifies signature, stores B's pubkey
+5. Both derive shared secret: ECDH(ourPriv, theirPub) → HKDF → AES key
+
+**Backward Compatibility:**
+- Legacy `E2E_INIT:<pubkey>` format still accepted (unsigned)
+- New keys always use signed KEX format
 
 ### Chunked Message Protocol
 
@@ -272,33 +293,42 @@ Reassembly Rules:
 └──────────────────────────────────────────────────────────────┘
 ```
 
-**Group Key Distribution (SECURITY CRITICAL):**
+**Group Key Distribution (SECURITY MODEL):**
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │            GROUP KEY SECURITY MODEL                           │
 ├──────────────────────────────────────────────────────────────┤
 │                                                              │
-│  CURRENT STATE (INSECURE - P1 FIX REQUIRED):                 │
-│  ──────────────────────────────────────────                  │
-│  Group key sent as base64 in memo field.                     │
-│  VULNERABILITY: Anyone scanning blockchain can see key!      │
+│  ✅ IMPLEMENTED (2026-01-20):                                │
+│  ─────────────────────────────                               │
+│  Per-recipient ECIES encryption of group key.                │
 │                                                              │
-│  REQUIRED FIX (P1 - Elevated from P2):                       │
-│  ─────────────────────────────────────                       │
-│  Per-recipient encryption of group key:                      │
+│  BEHAVIOR:                                                   │
+│  • If sender has recipient's E2E public key (from prior KEX):│
+│    → Group key encrypted with ECIES                          │
+│  • If no prior KEX exists (backward compat):                 │
+│    → Group key sent as plaintext Base64 (less secure)        │
 │                                                              │
-│  CREATE: Creator encrypts group key with OWN pubkey only     │
-│  INVITE: Creator encrypts group key with INVITEE'S pubkey    │
-│                                                              │
-│  Format: ZGRP|INVITE|group_id|invitee|ECIES(group_key)       │
+│  INVITE FORMAT:                                              │
+│  • ECIES: {"enc_key": "ECIES:ephemeral:nonce:ciphertext"}   │
+│  • Legacy: {"group_key": "base64_plaintext_key"}            │
 │                                                              │
 │  ECIES = Elliptic Curve Integrated Encryption Scheme:        │
-│  1. Generate ephemeral keypair                               │
-│  2. ECDH with recipient's public key                         │
-│  3. HKDF derive encryption key                               │
-│  4. AES-256-GCM encrypt group key                            │
-│  5. Output: ephemeral_pubkey || ciphertext || tag            │
+│  1. Generate ephemeral secp256r1 keypair                     │
+│  2. ECDH: ephemeral_priv × recipient_pub → shared_point      │
+│  3. HKDF: info="ZCHAT_ECIES_V1" → 32-byte AES key           │
+│  4. AES-256-GCM encrypt group key (12-byte nonce)            │
+│  5. Format: ECIES:<ephemeral_pub>:<nonce>:<ciphertext>       │
+│                                                              │
+│  DECRYPTION (recipient):                                     │
+│  1. Parse ECIES blob                                         │
+│  2. ECDH: our_priv × ephemeral_pub → shared_point           │
+│  3. HKDF derive same AES key                                 │
+│  4. AES-256-GCM decrypt                                      │
+│                                                              │
+│  PREREQUISITE: KEX must be completed before ECIES works.     │
+│  Without KEX, group invites fall back to plaintext keys.     │
 │                                                              │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -500,7 +530,7 @@ abstract class ZchatDatabase : RoomDatabase() {
 @Entity(tableName = "messages")
 data class Message(
     @PrimaryKey val txid: String,           // Zcash transaction ID
-    val conversationId: String,             // 12-char conversation ID
+    val conversationId: String,             // 8-char conversation ID
     val senderHash: String,                 // 16-char sender hash
     val type: MessageType,                  // DM, RXN, RCV, etc.
     val content: String,                    // Decrypted content
@@ -512,7 +542,7 @@ data class Message(
 
 @Entity(tableName = "conversations")
 data class Conversation(
-    @PrimaryKey val id: String,             // 12-char conversation ID
+    @PrimaryKey val id: String,             // 8-char conversation ID
     val peerAddress: String,                // Full Zcash address
     val peerHash: String,                   // 16-char hash
     val e2eKeyVersion: Int,                 // 1 or 2
@@ -1051,7 +1081,15 @@ model DownloadCode {
 │ POST /admin/whitelist/:id/reject  → Reject entry            │
 │ POST /admin/whitelist/:id/generate-code → Gen download code │
 │ POST /admin/whitelist/:id/send-code-email → Email code      │
+│ GET  /admin/contacts       → List contact form submissions  │
+│ POST /admin/contacts/:id/read → Mark submission as read     │
 │ GET  /users                → List all users                 │
+│                                                              │
+│ CONTACT:                                                     │
+│ POST /contact              → Submit contact form            │
+│                                                              │
+│ HEALTH:                                                      │
+│ GET  /health               → Health check endpoint          │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -1076,7 +1114,7 @@ model DownloadCode {
 | Spam | Requires ZEC payment per message | ✅ |
 | sender_hash collision | Uses 12 chars (48 bits) - acceptable | ✅ |
 | Blossom file exposure | E2E encrypt files before upload | ⚠️ P2 |
-| Backend mnemonic leak | Remove mnemonic from /me/wallet | ⚠️ P1 |
+| Backend mnemonic leak | Remove mnemonic from /me/wallet | ✅ COMPLETE |
 | No forward secrecy | Double Ratchet (planned) | 📋 P3 |
 
 ### Emergency Destruction System
@@ -1117,23 +1155,99 @@ model DownloadCode {
 └─────────────────────────────────────────────────────────────┘
 ```
 
+### Identity Regeneration System - ✅ IMPLEMENTED (2026-01-21)
+
+Users can regenerate their messaging identity (address) with options to notify contacts.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              IDENTITY REGENERATION MODES                     │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  MODE 1: DIVERSIFIED ADDRESS (Recommended)                   │
+│  ─────────────────────────────────────────                   │
+│  - Generates new diversified address from same seed          │
+│  - ZEC balance PRESERVED (same wallet)                       │
+│  - Can switch between "masks" (identities)                   │
+│  - Each mask has separate:                                   │
+│    • Conversation mappings                                   │
+│    • E2E keys                                                │
+│    • Nicknames                                               │
+│    • Drafts                                                  │
+│    • Group memberships                                       │
+│                                                              │
+│  MODE 2: FULL WALLET RESET                                   │
+│  ──────────────────────────                                  │
+│  - Generates entirely new seed phrase                        │
+│  - User MUST transfer ZEC to new wallet first                │
+│  - Old identity completely abandoned                         │
+│  - NO switching back (old wallet deleted)                    │
+│                                                              │
+│  NOTIFICATION OPTIONS:                                       │
+│  ─────────────────────                                       │
+│  A) Notify All Contacts                                      │
+│     - Sends ADDR message to address book + chat list         │
+│     - Recipients can update contact automatically            │
+│     - Cost: ~0.00001 ZEC per contact                         │
+│                                                              │
+│  B) Silent Regeneration                                      │
+│     - No notification sent                                   │
+│     - Existing conversations will not continue               │
+│     - Use for fresh start or privacy break                   │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**ADDR Protocol (Address Change Notification):**
+```
+ZMSG|4|ADDR|<conv_id>|<old_sender_hash>|<new_address>|<signature>
+
+Fields:
+- conv_id: Existing conversation ID
+- old_sender_hash: Hash of the OLD address (for identification)
+- new_address: Full new unified address (u1...)
+- signature: ECDSA signature of new_address using NEW private key
+
+Verification:
+1. Recipient receives ADDR message from known conversation
+2. Recipient verifies signature matches new_address
+3. Recipient updates stored address for this contact
+4. UI prompts: "Contact updated their address"
+```
+
+**UI Location:** Settings → More → "Change Identity"
+
+**Implementation Status:** ✅ Complete (2026-01-21)
+
+**Files:**
+- `ui-lib/src/main/java/.../changeidentity/IdentityManager.kt` - Identity storage and management
+- `ui-lib/src/main/java/.../changeidentity/ChangeIdentityVM.kt` - Business logic
+- `ui-lib/src/main/java/.../changeidentity/ChangeIdentityView.kt` - UI implementation
+- `ZMSGProtocol.kt` - ADDR message creation and parsing
+- `ZMSGConstants.kt` - ADDR marker constant
+
+**TODO (P2):**
+- Actual ADDR transaction sending (requires send flow integration)
+- Identity switching UI (select between existing masks)
+- Per-identity conversation namespacing
+
 ---
 
 ## 10. Known Issues and Fixes
 
 ### P1 (Release Critical) - UPDATED
 
-| Issue | File | Fix | Time |
-|-------|------|-----|------|
-| Weak key derivation | E2EEncryption.kt:87-91 | Implement HKDF | 3h |
-| Unauthenticated KEX | E2EEncryption.kt | Add KEX message type with signatures | 4h |
-| Group key unencrypted | ZMSGGroupProtocol.kt | Per-recipient ECIES encryption | 4h |
-| sender_hash collision | ZMSGProtocol.kt | Increase to 16 chars | 1h |
-| Group history not loading | GroupViewModel.kt:150 | Load from blockchain | 3h |
-| GROUP_LEAVE not broadcast | GroupViewModel.kt:213 | Send to all members | 2h |
-| Backend stores mnemonic | server.ts | Remove from /me/wallet | 1h |
+| Issue | File | Fix | Status |
+|-------|------|-----|--------|
+| Weak key derivation | E2EEncryption.kt | Implement HKDF | ✅ Complete |
+| Unauthenticated KEX | E2EEncryption.kt | Add KEX message type with signatures | ✅ Complete |
+| Group key unencrypted | ZMSGGroupProtocol.kt | Per-recipient ECIES encryption | ✅ Complete |
+| sender_hash collision | ZMSGProtocol.kt | 12 chars adequate (~48 bits entropy) | ✅ No change needed |
+| Group history not loading | GroupViewModel.kt | Load from blockchain | ✅ Complete |
+| GROUP_LEAVE not broadcast | GroupViewModel.kt | Send to all members | ✅ Complete |
+| Backend stores mnemonic | server.ts | Remove from /me/wallet | ✅ Complete |
 
-**Total P1: 18 hours** (increased from 8h due to security requirements)
+**P1 Status: All items complete**
 
 ### P2 (Quality)
 

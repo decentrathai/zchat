@@ -1,7 +1,7 @@
 # Project: ZCHAT
 
-**Version:** 1.7
-**Last Updated:** 2026-01-22
+**Version:** 1.8
+**Last Updated:** 2026-02-02
 
 ## Overview
 ZCHAT is a privacy-first messaging application built on Zcash shielded transactions. Messages are sent via the memo field of shielded transactions, providing cryptographic privacy guarantees. The app supports direct messages, group chats, disappearing messages, and time-locked content. Future integration with NOSTR will add file sharing, audio messages, and voice/video calls.
@@ -283,9 +283,9 @@ See `ANDROID_FIX_PLAN.md` → Testing Checklist section
 
 ## Current Status
 
-**Phase:** Implementation Phase - P1 Release Critical
+**Phase:** Implementation Phase - P2 Quality Improvements
 
-**P1 Tasks (Status as of 2026-01-20):**
+**P1 Tasks (Status: ✅ COMPLETE as of 2026-01-21):**
 | Task | Status | Notes |
 |------|--------|-------|
 | HKDF key derivation | ✅ COMPLETE | RFC 5869, V1/V2 versioning |
@@ -295,6 +295,7 @@ See `ANDROID_FIX_PLAN.md` → Testing Checklist section
 | Group key ECIES | ✅ COMPLETE | Encrypt/decrypt group keys |
 | sender_hash collision | ✅ 12 chars adequate | ~48 bits entropy |
 | Backend mnemonic fix | ✅ COMPLETE | Removed from /me/wallet |
+| Identity Regeneration | ✅ COMPLETE | Diversified addresses + ADDR protocol |
 
 **Completed:**
 - ✅ Product documentation (PRODUCT.md v2.0)
@@ -302,18 +303,25 @@ See `ANDROID_FIX_PLAN.md` → Testing Checklist section
 - ✅ Development standards (DEVELOPMENT_STANDARDS.md)
 - ✅ Security audit (seed storage verified secure)
 - ✅ Architecture consistency review (56 issues fixed)
-- ✅ Backend test infrastructure (38 tests passing)
+- ✅ Backend test infrastructure (44 tests passing)
 - ✅ Web frontend test infrastructure (18 tests passing)
 - ✅ Android test requirements documented (ANDROID_TEST_REQUIREMENTS.md)
+- ✅ Cyberpunk UI Theme (icons, colors, fonts, glassmorphism)
+- ✅ Admin Dashboard enhancements (delete, custom messages)
+- ✅ Dead Man's Switch research complete
 
 **Pending (P2+):**
 - Error handling improvements (ZchatResult types implemented, integration ongoing)
+- Dead Man's Switch implementation (research complete)
 - NOSTR integration (48h estimated)
+- APK size optimization (currently 237MB due to 4K icons)
 
-**Recently Completed:**
-- ✅ Logging redaction (LogRedaction utility, address/key sanitization)
-- ✅ ZchatResult/ZchatError types for explicit error handling
-- ✅ Identity Regeneration (diversified addresses)
+**Recently Completed (2026-02-02):**
+- ✅ Cyberpunk UI Theme (Nano Banana Pro icons, color palette, Orbitron font)
+- ✅ Admin Dashboard (delete button, custom approval messages)
+- ✅ Backend fixes (CORS DELETE, JSON parser, HTML escaping)
+- ✅ Dead Man's Switch research document
+- ✅ APK v2.8.1-cyberpunk-20260202 (237MB)
 
 See `IMPLEMENTATION_STEPS.md` for detailed task breakdown.
 
@@ -340,6 +348,7 @@ See `IMPLEMENTATION_STEPS.md` for detailed task breakdown.
 | 10 | **README.md** | User-facing documentation | Project overview |
 | 11 | **SESSION_RESTART_PROMPT.md** | Complete restart prompt for new sessions | Starting new session |
 | 12 | **SYSTEM_PROMPT.md** | AI development assistant system prompt | AI-assisted development |
+| 13 | **DEAD_MANS_SWITCH_RESEARCH.md** | Dead Man's Switch feature design | zchat-android/docs/ |
 
 **IMPORTANT:** When updating SESSION_RESTART_PROMPT.md, also copy to Windows:
 ```bash
@@ -592,6 +601,28 @@ cloudflared tunnel run zchat
 
 ---
 ## Session Notes
+
+### 2026-02-02 - Cyberpunk UI & Dead Man's Switch Research
+
+**Completed:**
+- ✅ Cyberpunk UI Theme fully integrated (icons, colors, fonts, glassmorphism)
+- ✅ Admin Dashboard: delete button, custom approval messages
+- ✅ Backend: CORS DELETE, JSON parser, HTML escaping fixes
+- ✅ Dead Man's Switch research document created
+- ✅ APK v2.8.1-cyberpunk-20260202 built (237MB)
+- ✅ Updated SESSION_RESTART_PROMPT.md and synced to Windows
+
+**Files Created:**
+- `/home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md`
+
+**Decisions Made:**
+- DEC-017: Cyberpunk UI Theme
+- DEC-018: Dead Man's Switch Architecture
+- DEC-019: Admin Dashboard Whitelist Management
+
+**APK Location:** `/home/yourt/zchat-v2.8.1-cyberpunk-20260202.apk`
+
+---
 
 ### 2026-01-21 (Continuation) - P2 Quality Improvements
 

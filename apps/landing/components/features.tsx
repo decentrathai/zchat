@@ -1,23 +1,42 @@
-import { Shield, Wallet, Server } from "lucide-react"
+import { Shield, Wallet, Server, Lock, Users, Zap } from "lucide-react"
 
 export function Features() {
   const features = [
     {
       icon: Shield,
-      title: "Shielded by design",
+      title: "Zero-Knowledge Privacy",
       description:
-        "Each message is embedded in a shielded Zcash transaction memo on mainnet. Metadata is minimized; privacy is the default.",
+        "Your messages join millions of shielded notes in an anonymity set so large, even unlimited resources can't distinguish your transactions.",
+    },
+    {
+      icon: Lock,
+      title: "No Sign-Up Required",
+      description:
+        "No phone number. No email. No account. Just pure private messaging powered by Zcash's battle-tested cryptography.",
     },
     {
       icon: Wallet,
-      title: "Wallet-first chat",
+      title: "Wallet-First Chat",
       description:
-        "Users get a Unified Address and QR code, can receive ZEC and messages in one place, and see balances directly in the app.",
+        "Get a Unified Address, receive ZEC and messages in one place. Your messages live on the blockchain — decentralized and censorship-resistant.",
+    },
+    {
+      icon: Users,
+      title: "Perfect Anonymity Set",
+      description:
+        "Every shielded transaction hides among all notes ever created. Privacy strengthens over time as your messages become indistinguishable.",
+    },
+    {
+      icon: Zap,
+      title: "Orchard Protocol",
+      description:
+        "Built on Zcash's latest shielded pool with quantum-ready foundations. Your privacy is protected today and prepared for tomorrow.",
     },
     {
       icon: Server,
-      title: "Infrastructure handled for you",
-      description: "The backend runs zebrad and lightwalletd; end users just use the app (web, PWA, or native mobile).",
+      title: "Self-Hosted Stack",
+      description:
+        "The infrastructure runs zebrad and lightwalletd — no third-party servers touching your messages. True end-to-end privacy.",
     },
   ]
 
@@ -26,9 +45,12 @@ export function Features() {
       <div className="container mx-auto px-4 lg:px-8">
         <div className="mb-12 text-center">
           <h2 className="mb-4 text-balance text-3xl font-bold text-white lg:text-4xl">Why ZCHAT?</h2>
+          <p className="mx-auto max-w-2xl text-gray-400">
+            Messages encrypted with zero-knowledge proofs. Only you and your recipient can read them — not us, not anyone.
+          </p>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-3">
+        <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {features.map((feature) => (
             <div
               key={feature.title}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { sendMessage as apiSendMessage, getAuthToken } from '@/lib/api';
-import { truncateAddress } from './ChatSidebar';
+import { truncateAddress } from '@/lib/formatting';
 
 // Type for a message
 type Message = {

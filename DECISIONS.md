@@ -1,7 +1,8 @@
 # ZCHAT Architectural Decisions Log
 
-**Version:** 1.1
+**Version:** 1.2
 **Created:** 2026-01-19
+**Updated:** 2026-02-02
 **Purpose:** Document all significant architectural and product decisions with reasoning
 
 ---
@@ -139,27 +140,29 @@ Move to sessionStorage (cleared on browser close) or React state only.
 
 ## Protocol Decisions
 
-### DEC-006: 12-Character Alphanumeric Conversation IDs
+### DEC-006: 8-Character Alphanumeric Conversation IDs
 
 **Date:** 2026-01-19
-**Status:** Active
+**Status:** Active (Implementation uses 8 chars, not 12 as originally planned)
 
 **Context:**
-Original design used 8 characters. Collision risk analysis showed this was insufficient for large-scale deployment.
+Original design planned to increase from 8 to 12 characters. After review, 8 characters was kept for message space efficiency.
 
 **Decision:**
-Use 12 alphanumeric characters (a-z, A-Z, 0-9) providing ~71 bits entropy.
+Use 8 uppercase alphanumeric characters (A-Z, 0-9) providing ~41 bits entropy.
 
 **Math:**
 ```
-log2(62^12) = 71.45 bits
-Collision probability at 1M conversations: ~10^-10
+log2(36^8) = 41.4 bits
+Collision probability at 100K conversations: ~10^-6
 ```
 
+**Note (2026-01-20 Audit):** Original DEC-006 planned to increase from 8→12 chars for better collision resistance. The implementation has always used 8 chars (ZMSGConstants.kt). For ZCHAT's scale (<100K conversations), 8 chars is adequate and no migration needed.
+
 **Consequences:**
-- Virtually no collision risk
-- Slightly longer message overhead (+4 bytes)
-- May require migration for existing conversations
+- Acceptable collision risk for current scale
+- More space for message content (+4 bytes vs 12-char design)
+- No migration needed (original implementation was always 8 chars)
 
 ---
 
@@ -451,6 +454,98 @@ Remove mnemonic from all API responses. Client should never request mnemonic fro
 
 **Consequences:**
 - No breaking changes - backend never had this exposure in production
+
+---
+
+## UI/UX Decisions
+
+### DEC-017: Cyberpunk UI Theme
+
+**Date:** 2026-02-02
+**Status:** Active (Implemented)
+
+**Context:**
+ZCHAT needed a distinctive visual identity separate from the original Zashi wallet. Target users (privacy-conscious, technical) respond well to cyberpunk aesthetics.
+
+**Decision:**
+Implement a comprehensive cyberpunk theme with:
+- Custom icons from Nano Banana Pro (16 assets, 4K resolution)
+- Dark color palette: bgDeep (#0D0B1A), bgPrimary (#1A1625), accentCyan (#00D9FF), accentMagenta (#FF006E)
+- Orbitron font for cyberpunk typography
+- Glassmorphism effects via Haze library
+
+**Alternatives Considered:**
+- Keep Zashi's original design (too generic)
+- Minimal dark theme (not distinctive enough)
+- Neon-heavy design (too visually noisy)
+
+**Consequences:**
+- Distinctive brand identity
+- APK size increased to 237MB (4K icons)
+- May need icon optimization for APK size reduction
+- Splash screen uses cyberpunk deep purple (#0D0B1A)
+
+---
+
+### DEC-018: Dead Man's Switch Architecture
+
+**Date:** 2026-02-02
+**Status:** Active (Researched, Implementation Pending)
+
+**Context:**
+High-risk users (journalists, activists) need automatic data destruction if they're detained/arrested and cannot manually destroy data.
+
+**Decision:**
+Implement Dead Man's Switch using hybrid approach:
+- Primary: `AlarmManager.setExactAndAllowWhileIdle()` for exact timing in Doze mode
+- Backup: `WorkManager` periodic check every 15 minutes
+- Recovery: `BroadcastReceiver` for BOOT_COMPLETED to restore timer after reboot
+- Remote cancellation via Zcash shielded transaction with secret code
+
+**Technical Details:**
+- Timer state stored in persistent preferences
+- Dual clock validation (wall clock + elapsed realtime) to detect time manipulation
+- Cancellation via local code or remote `ZCHAT_DMS_CANCEL:<code>` transaction
+- Leverages existing `DestroyManager` for complete data wipe
+
+**Alternatives Considered:**
+- WorkManager only (not reliable for exact timing)
+- Foreground service (high battery drain)
+- Server-based dead man's switch (requires online, defeats purpose)
+
+**Consequences:**
+- Works offline (critical for high-risk scenarios)
+- Survives device reboot
+- May require battery optimization exemption
+- iOS implementation more limited (BGTaskScheduler)
+
+**Reference:** `/home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md`
+
+---
+
+### DEC-019: Admin Dashboard Whitelist Management
+
+**Date:** 2026-02-02
+**Status:** Active (Implemented)
+
+**Context:**
+Admin dashboard needed enhanced controls for managing whitelist entries beyond just approval.
+
+**Decision:**
+Add delete functionality and custom approval messages:
+- Delete button with confirmation modal for removing entries
+- Custom message field in approval modal (appears in email body)
+- Backend: CORS DELETE method, HTML escaping for custom messages, empty JSON body handling
+
+**Technical Details:**
+- `DELETE /admin/whitelist/:id` endpoint with X-Admin-Secret auth
+- `escapeHtml()` function for safe HTML rendering in emails
+- Custom JSON parser to handle empty bodies with Content-Type header
+
+**Consequences:**
+- Admins can clean up duplicate/spam entries
+- Personalized approval emails improve user experience
+- Backend handles edge cases (empty bodies, HTML injection)
 
 ---
 

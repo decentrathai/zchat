@@ -3,13 +3,10 @@
 import { useState } from 'react';
 import QRCode from 'react-qr-code';
 import { useTheme } from '@/components/theme/ThemeProvider';
+import { truncateAddress } from '@/lib/formatting';
 
-// Helper function to truncate addresses/txids for display (first 5 + last 5 chars)
-export const truncateAddress = (address: string, prefixLen = 5, suffixLen = 5): string => {
-  if (!address) return '';
-  if (address.length <= prefixLen + suffixLen + 3) return address;
-  return `${address.slice(0, prefixLen)}...${address.slice(-suffixLen)}`;
-};
+// Re-export for backward compatibility (used by ChatWindow)
+export { truncateAddress };
 
 // Type for a message
 type Message = {

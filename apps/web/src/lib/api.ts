@@ -75,16 +75,16 @@ export async function login(username: string, password: string): Promise<LoginRe
 
 /**
  * Link wallet address to the authenticated user
- * Also imports the wallet on the backend using the provided mnemonic
+ *
+ * SECURITY: Mnemonic is NEVER sent to the server. Only the public address is stored.
+ * The wallet is managed entirely client-side.
  *
  * @param token - JWT auth token
  * @param address - The user's Zcash unified address (derived client-side)
- * @param mnemonic - The user's 24-word BIP39 mnemonic (client-side generated)
  */
 export async function linkWalletAddress(
   token: string,
-  address: string,
-  mnemonic: string
+  address: string
 ): Promise<WalletAddressResponse> {
   const response = await fetch(`${API_BASE_URL}/me/wallet`, {
     method: 'POST',
@@ -92,7 +92,7 @@ export async function linkWalletAddress(
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${token}`,
     },
-    body: JSON.stringify({ address, mnemonic }),
+    body: JSON.stringify({ address }),
   });
 
   const data = await response.json();

@@ -4,7 +4,7 @@ import { useState } from "react"
 import { Button } from "@/components/ui/button"
 import { Download, Smartphone, Check, ExternalLink, Key } from "lucide-react"
 
-type FormStep = "email" | "reason" | "success"
+type FormStep = "email" | "reason" | "success" | "already_registered"
 type CodeStep = "enter" | "downloading" | "error"
 
 export function DownloadSection() {
@@ -63,7 +63,12 @@ export function DownloadSection() {
         throw new Error(data.error || "Failed to join whitelist")
       }
 
-      setFormStep("success")
+      // Check if email was already registered
+      if (data.alreadyRegistered) {
+        setFormStep("already_registered")
+      } else {
+        setFormStep("success")
+      }
     } catch (err: any) {
       setError(err.message || "Something went wrong. Please try again.")
     } finally {
@@ -408,6 +413,46 @@ export function DownloadSection() {
                           Follow @zchat_app
                           <ExternalLink className="h-4 w-4" />
                         </a>
+                      </div>
+                    )}
+
+                    {formStep === "already_registered" && (
+                      <div className="space-y-4 text-center">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-yellow-500/20">
+                          <Key className="h-8 w-8 text-yellow-400" />
+                        </div>
+                        <h4 className="text-xl font-semibold text-white">
+                          You&apos;re already on the whitelist!
+                        </h4>
+                        <p className="text-gray-300">
+                          This email is already registered. If you&apos;ve received a download code, use it below. Otherwise, wait for approval.
+                        </p>
+                        <div className="space-y-3 pt-2">
+                          <Button
+                            onClick={() => {
+                              setShowForm(false)
+                              setShowCodeForm(true)
+                              setFormStep("email")
+                              setEmail("")
+                              setReason("")
+                            }}
+                            className="w-full bg-cyan-500 text-black transition-all hover:bg-cyan-400"
+                          >
+                            <Key className="mr-2 h-4 w-4" />
+                            Enter Download Code
+                          </Button>
+                          <button
+                            onClick={() => {
+                              setShowForm(false)
+                              setFormStep("email")
+                              setEmail("")
+                              setReason("")
+                            }}
+                            className="w-full text-sm text-gray-400 hover:text-white"
+                          >
+                            Go Back
+                          </button>
+                        </div>
                       </div>
                     )}
                   </div>

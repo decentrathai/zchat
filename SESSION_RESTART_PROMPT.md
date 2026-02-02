@@ -26,6 +26,7 @@ Read these files before doing anything else:
 7. /home/yourt/zchat/DECISIONS.md                 - Key architectural decisions with reasoning
 8. /home/yourt/zchat/ISSUES_TO_FIX.md             - Audit findings, prioritized issues
 9. /home/yourt/zchat/ANDROID_TEST_REQUIREMENTS.md - Android test specs (when writing tests)
+10. /home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md - Dead Man's Switch feature research
 ```
 
 ---
@@ -38,8 +39,8 @@ Read these files before doing anything else:
 ```bash
 echo "=== ZCHAT Service Health Check ===" && \
 pgrep -f 'cloudflared tunnel' > /dev/null && echo "1. Cloudflare Tunnel: UP" || echo "1. Cloudflare Tunnel: DOWN - CRITICAL" && \
-curl -s http://localhost:4000 > /dev/null && echo "2. Backend API (4000): UP" || echo "2. Backend API (4000): DOWN" && \
-curl -s http://localhost:3002 > /dev/null && echo "3. Admin Dashboard (3002): UP" || echo "3. Admin Dashboard (3002): DOWN" && \
+curl -s http://localhost:4000/health > /dev/null && echo "2. Backend API (4000): UP" || echo "2. Backend API (4000): DOWN" && \
+curl -s http://localhost:3002 > /dev/null && echo "3. Landing Page (3002): UP" || echo "3. Landing Page (3002): DOWN" && \
 curl -s http://127.0.0.1:8232 > /dev/null && echo "4. Zebrad (8232): UP" || echo "4. Zebrad (8232): DOWN" && \
 pgrep -f lightwalletd > /dev/null && echo "5. Lightwalletd (9067): UP" || echo "5. Lightwalletd (9067): DOWN" && \
 curl -s http://localhost:3000 > /dev/null && echo "6. Web Frontend (3000): UP" || echo "6. Web Frontend (3000): DOWN (optional)"
@@ -63,8 +64,8 @@ nohup cloudflared tunnel run zchat > ~/cloudflared.log 2>&1 &
 #    First time after reinstall may need: cd ~/zchat/apps/backend && pnpm install && npx prisma generate
 cd ~/zchat/apps/backend && nohup pnpm dev > ~/backend.log 2>&1 &
 
-# 3. ADMIN DASHBOARD (port 3002) - Landing page with admin panel at /admin
-#    This serves zsend.xyz/admin for managing whitelist
+# 3. LANDING PAGE (port 3002) - Landing page with admin panel at /admin
+#    This serves zsend.xyz and zsend.xyz/admin for managing whitelist
 cd ~/zchat/apps/landing && nohup pnpm dev > ~/landing.log 2>&1 &
 
 # 4. ZEBRAD - Zcash blockchain node (port 8232)
@@ -91,6 +92,10 @@ Internet
     v
 Cloudflare Tunnel (zchat)
     |
+    +-> zsend.xyz       --> Landing Page (localhost:3002)
+    |                        |
+    |                        +-> /admin route --> Admin Dashboard
+    |
     +-> api.zsend.xyz   --> Backend API (localhost:4000) --> PostgreSQL
     |                                |
     |                                v
@@ -102,35 +107,28 @@ Cloudflare Tunnel (zchat)
     +-> app.zsend.xyz   --> Web Frontend (localhost:3000)
     |
     +-> lwd.zsend.xyz   --> Lightwalletd (localhost:9067)
-
-Cloudflare Pages (separate)
-    |
-    +-> zsend.xyz       --> Landing page (static export)
-                             |
-                             +-> /admin route --> Admin Dashboard (localhost:3002)
 ```
 
-**Note:** The landing page at zsend.xyz is deployed via Cloudflare Pages (static).
-The /admin dashboard requires the local landing app (port 3002) to be running
-and routed through the Cloudflare tunnel.
+**Note:** ALL zsend.xyz sites are served via Cloudflare Tunnel (NOT Cloudflare Pages).
+If zsend.xyz is down, check that port 3002 (landing) is running.
 
 #### Verify Public URLs After Starting
 ```bash
 echo "Testing public URLs..." && \
 curl -s https://zsend.xyz | head -c 100 && echo "... zsend.xyz OK" && \
-curl -s https://api.zsend.xyz | head -c 100 && echo "... api.zsend.xyz OK"
+curl -s https://api.zsend.xyz/health | head -c 100 && echo "... api.zsend.xyz OK"
 ```
 
 Expected results:
-- https://zsend.xyz - Landing page (served by Cloudflare Pages, always up)
-- https://api.zsend.xyz - Backend API (should return JSON)
+- https://zsend.xyz - Landing page (via Cloudflare Tunnel → localhost:3002)
+- https://api.zsend.xyz - Backend API (should return `{"ok":true}`)
 - https://app.zsend.xyz - Web app (if frontend started)
 
 #### Log Files for Debugging
 ```
 ~/cloudflared.log     - Tunnel logs (check for connection errors)
 ~/backend.log         - Backend API logs (check for startup errors)
-~/landing.log         - Admin dashboard logs (port 3002)
+~/landing.log         - Landing page logs (port 3002)
 ~/zebrad.log          - Zcash node logs (check sync status)
 ~/lightwalletd.log    - Wallet server logs
 ~/frontend.log        - Web frontend logs
@@ -145,47 +143,93 @@ These were verified during hostile audit. Accept them as true:
 
 | Fact | Status | Details |
 |------|--------|---------|
-| Android seed storage | SECURE | EncryptedSharedPreferences with AES256-GCM |
-| E2E key derivation | NEEDS FIX | Uses weak SHA-256, needs HKDF (P1 priority) |
+| Android seed storage | ✅ SECURE | EncryptedSharedPreferences with AES256-GCM |
+| E2E key derivation | ✅ FIXED | HKDF implemented (RFC 5869, V1/V2 versioning) |
+| KEX Protocol | ✅ COMPLETE | Signed key exchange prevents MITM |
+| ECIES Group Keys | ✅ COMPLETE | Per-recipient encrypted group keys |
+| Identity Regeneration | ✅ COMPLETE | Diversified addresses + ADDR protocol |
 | Web app ZMSG protocol | MISSING | Cannot interoperate with Android |
 | Web app strategy | Option C | Secondary platform, syncs from mobile |
-| **Backend Security** | **COMPLETE** | **3-round hostile audit, 33 fixes, 44 tests passing** |
-
-**File with security issue:** `/home/yourt/zchat-android/.../E2EEncryption.kt` lines 87-91
+| **Backend Security** | **✅ COMPLETE** | **3-round hostile audit, 33 fixes, 44 tests passing** |
 
 ---
 
-### STEP 4: CURRENT IMPLEMENTATION PHASE
+### STEP 4: CURRENT IMPLEMENTATION STATUS
 
-**Backend audit is COMPLETE (2026-01-20).** 33 security fixes across 3 rounds. All tests passing.
+**P1 (Release Critical) is COMPLETE (2026-01-21).** All core security features implemented.
 
-**Phase:** P1 - Release Critical (17 hours remaining) - Android work
+**Recent Work (2026-02-02):**
 
-| Task | File | Time | Status |
-|------|------|------|--------|
-| HKDF key derivation | E2EEncryption.kt | 3h | Not started |
-| Group history loading | GroupViewModel.kt | 3h | Not started |
-| GROUP_LEAVE broadcast | GroupViewModel.kt | 2h | Not started |
-| KEX protocol | E2EEncryption.kt | 4h | Not started |
-| Group key ECIES | GroupCrypto.kt | 4h | Not started |
-| sender_hash 16 chars | ZMSGProtocol.kt | 1h | Not started |
-| ~~Backend mnemonic fix~~ | ~~wallet.ts~~ | ~~1h~~ | **DONE** (audit) |
+#### Cyberpunk UI Theme
+- ✅ Custom icons (16 assets) integrated from Nano Banana Pro
+- ✅ Splash screen background: `#0D0B1A` (cyberpunk deep purple)
+- ✅ Color palette: bgDeep, bgPrimary, bgSecondary, accentCyan, accentMagenta
+- ✅ Orbitron font for cyberpunk typography
+- ✅ Glassmorphism effects via Haze library
+- ✅ APK size: 237MB (4K icons)
 
-Check IMPLEMENTATION_STEPS.md for detailed task breakdown with checkboxes.
+#### Admin Dashboard Enhancements
+- ✅ Delete button for whitelist entries (with confirmation modal)
+- ✅ Custom message field in approval modal (appears in email)
+- ✅ "Already registered" notification for duplicate email submissions
 
-**Implementation Rules (for each step):**
-1. **Implement** -> 2. **Test** -> 3. **Mark Progress** -> 4. **Document deviations**
+#### Backend Fixes
+- ✅ CORS methods explicitly include DELETE
+- ✅ Custom JSON parser handles empty bodies with Content-Type header
+- ✅ HTML escaping via `escapeHtml()` for custom email messages
+
+#### Dead Man's Switch Research
+- ✅ Comprehensive research document: `/home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md`
+- Architecture: AlarmManager + WorkManager backup + Boot receiver
+- Remote cancellation via Zcash transaction
+- iOS implementation notes (BGTaskScheduler limitations)
+
+**Latest APK:**
+- Version: `zchat-v2.8.1-cyberpunk-20260202.apk`
+- Location: `/home/yourt/zchat-v2.8.1-cyberpunk-20260202.apk`
+- Size: 237MB
 
 ---
 
-### STEP 5: PROJECT STRUCTURE
+### STEP 5: WHITELIST & DOWNLOAD SYSTEM
+
+**Admin Dashboard:** https://zsend.xyz/admin
+
+**Admin Secret (stored in localStorage):**
+```
+b5a0a9be7f25d75b8402370a9176fec75c987c9a80a6134c65edab727e04ecff
+```
+
+**Flow:**
+1. User requests access at zsend.xyz → submits email + reason
+2. Request appears in admin dashboard (click Refresh to see new entries)
+3. Admin clicks "Approve & Send" → modal with optional custom message
+4. Code generated (8 chars) and emailed via Resend
+5. User enters code at zsend.xyz → downloads APK
+
+**APK Location for Download System:**
+- Backend serves from: `/home/yourt/` (APK_DIR)
+- Pattern: `*zchat*.apk` sorted by modification time (newest first)
+
+**API Endpoints:**
+- `POST /whitelist/join` - Submit whitelist request
+- `GET /admin/whitelist` - List all entries (requires X-Admin-Secret header)
+- `POST /admin/whitelist/:id/generate-code` - Generate download code
+- `POST /admin/whitelist/:id/send-code-email` - Send email with optional customMessage
+- `DELETE /admin/whitelist/:id` - Delete entry
+- `POST /download/verify-code` - Verify code and get download token
+- `GET /download/apk/:token` - Download APK (one-time token)
+
+---
+
+### STEP 6: PROJECT STRUCTURE
 
 ```
 /home/yourt/zchat/               # Main monorepo
 +-- apps/
 |   +-- backend/                 # Node.js API (port 4000) - PRODUCTION READY
 |   +-- web/                     # Next.js frontend (port 3000)
-|   +-- landing/                 # Landing page (Cloudflare Pages)
+|   +-- landing/                 # Landing page + Admin (port 3002)
 +-- packages/
 |   +-- wallet-core/             # Rust WASM wallet
 +-- CLAUDE.md                    # Project context (read first)
@@ -200,12 +244,15 @@ Check IMPLEMENTATION_STEPS.md for detailed task breakdown with checkboxes.
 /home/yourt/zchat-android/       # Android app (Zashi fork) - PRIMARY PLATFORM
 +-- app/                         # Main Android module
 +-- ui-lib/                      # UI components (Compose)
++-- ui-design-lib/               # Design system + Cyberpunk assets
 +-- sdk-ext-lib/                 # SDK extensions
++-- docs/
+|   +-- DEAD_MANS_SWITCH_RESEARCH.md  # DMS feature research
 ```
 
 ---
 
-### STEP 6: ANDROID BUILD COMMANDS
+### STEP 7: ANDROID BUILD COMMANDS
 
 ```bash
 cd /home/yourt/zchat-android
@@ -214,13 +261,16 @@ cd /home/yourt/zchat-android
 ANDROID_HOME="$HOME/android-sdk" \
 ANDROID_SDK_ROOT="$HOME/android-sdk" \
 JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" \
-./gradlew assembleDebug
+./gradlew assembleZcashmainnetFossDebug
 
 # Quick compile check (faster)
-./gradlew :ui-lib:compileZcashmainnetFossReleaseSources
+./gradlew :ui-lib:compileZcashmainnetFossDebugSources
 
 # Copy APK to Windows Downloads
 cp app/build/outputs/apk/zcashmainnetFoss/debug/*.apk /mnt/c/Users/yourt/Downloads/
+
+# Copy APK to download system location
+cp app/build/outputs/apk/zcashmainnetFoss/debug/*.apk /home/yourt/
 
 # Install to connected device
 $HOME/android-sdk/platform-tools/adb install app/build/outputs/apk/zcashmainnetFoss/debug/*.apk
@@ -228,7 +278,7 @@ $HOME/android-sdk/platform-tools/adb install app/build/outputs/apk/zcashmainnetF
 
 ---
 
-### STEP 6.5: RUN TESTS
+### STEP 8: RUN TESTS
 
 ```bash
 # Backend tests (44 tests - API, auth, validation, security)
@@ -249,7 +299,7 @@ cd /home/yourt/zchat/apps/web && pnpm test
 
 ---
 
-### STEP 7: CODING STANDARDS (Always Follow)
+### STEP 9: CODING STANDARDS (Always Follow)
 
 **Boris Cherny TypeScript/Kotlin Principles:**
 
@@ -264,23 +314,22 @@ See DEVELOPMENT_STANDARDS.md for complete reference with code examples.
 
 ---
 
-### STEP 8: METHODOLOGY COMPLIANCE
+### STEP 10: UPCOMING FEATURES
 
-This project follows the "AI-Assisted Product Development Methodology":
+**Dead Man's Switch (Researched, Not Implemented):**
+- Timer-based self-destruct for high-risk users
+- Survives app kill, device sleep, reboot
+- Cancellation via local code or remote Zcash transaction
+- See: `/home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md`
 
-1. **Phase 1 (Product Document Formation)** - COMPLETE (PRODUCT.md v2.0)
-2. **Phase 2 (Architectural Consistency)** - COMPLETE (hostile audit done)
-3. **Phase 3 (CLAUDE.md Formation)** - COMPLETE
-4. **Phase 4 (System Prompt)** - Embedded in CLAUDE.md
-5. **Phase 5 (Implementation Planning)** - COMPLETE (IMPLEMENTATION_STEPS.md)
-6. **Phase 6 (Codebase Consistency)** - Do during implementation
-7. **Phase 7 (Periodic Audits)** - Every 3-4 features
-
-**Rules:**
-- Always update IMPLEMENTATION_STEPS.md after completing work
-- Log decisions in DECISIONS.md when making architectural choices
-- Before fixing issues, verify they're not false positives (Double-Check Protocol)
-- Never commit unless user explicitly requests
+**P2 Tasks (Current Phase):**
+| Task | File | Time | Status |
+|------|------|------|--------|
+| Error handling (ZchatResult) | common/result/* | 4h | ✅ COMPLETE |
+| Logging redaction | common/util/LogRedaction.kt | 2h | ✅ COMPLETE |
+| ADDR transaction sending | ChangeIdentityVM.kt | 2h | Not started |
+| Identity switching UI | changeidentity/* | 3h | Not started |
+| Dead Man's Switch | New files | 8h | Researched |
 
 ---
 
@@ -295,16 +344,21 @@ This project follows the "AI-Assisted Product Development Methodology":
    - Current implementation phase
    - What was the last completed task
    - What should be worked on next
-6. **Ask user** what they want to work on if unclear
+6. **Ask user** what they wants to work on if unclear
 
-**Last completed work (2026-01-20):**
-- Backend hostile audit Round 3 complete (11 fixes)
-- Total: 33 security fixes across 3 rounds
-- All 44 backend tests passing
-- Backend is PRODUCTION READY
+**Last session work (2026-02-02):**
+- ✅ Cyberpunk UI theme complete (splash, icons, colors)
+- ✅ Admin dashboard: delete button + custom message in approval emails
+- ✅ Backend: CORS DELETE fix, empty JSON body handling, HTML escaping
+- ✅ Dead Man's Switch: comprehensive research document
+- ✅ Built APK v2.8.1-cyberpunk-20260202 (237MB)
+- ✅ Responded to Grok's security analysis with technical corrections
 
-**Next recommended task:**
-- P1.1: HKDF Key Derivation Fix in Android (`E2EEncryption.kt`)
+**Next recommended tasks:**
+- Implement Dead Man's Switch (Phase 1: Core Timer)
+- P2: ADDR transaction sending integration
+- P2: Identity switching UI
+- Reduce APK size (optimize 4K icons)
 
 ## END OF PROMPT
 
@@ -314,4 +368,4 @@ This project follows the "AI-Assisted Product Development Methodology":
 
 **File location:** `/home/yourt/zchat/SESSION_RESTART_PROMPT.md`
 
-*Last updated: 2026-01-20*
+*Last updated: 2026-02-02*

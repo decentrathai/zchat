@@ -670,4 +670,86 @@ Fully implemented but not in product doc:
 
 ---
 
+## PART 5: ANDROID CRYPTO HOSTILE AUDIT (2026-01-20)
+
+**File:** `E2EEncryption.kt`
+**Status:** Review Complete - Implementation Issues Identified
+
+### CRITICAL Issues (P1 - Must Fix)
+
+| # | Issue | Location | Impact |
+|---|-------|----------|--------|
+| C1 | SharedKey length not validated | encrypt(), decrypt() | Wrong-sized keys create weak crypto |
+| C2 | Nonce length validation missing | decrypt(), decryptECIES() | Invalid nonces cause crypto failures |
+
+### HIGH Issues (P2 - Should Fix)
+
+| # | Issue | Location | Impact |
+|---|-------|----------|--------|
+| H1 | Base64 decode exceptions uncaught | sign(), deriveSharedSecret() | Can crash app |
+| H2 | ECIES uses null salt | encryptECIES(), decryptECIES() | Weaker than V2 derivation |
+| H3 | Decryption returns null for both format errors AND auth failures | decrypt() | Can't distinguish tampering |
+| H4 | KEX signature missing replay protection | createKEXPayload() | Replay attacks possible |
+| H5 | Empty/null key inputs not validated | multiple functions | Cryptographic failures |
+
+### MEDIUM Issues (P3 - Consider)
+
+| # | Issue | Location | Impact |
+|---|-------|----------|--------|
+| M1 | Broad exception catching | all decrypt functions | Hides root cause |
+| M2 | No key context separation | deriveKeyV2() | Same key for different purposes |
+| M3 | ECDSA signature malleability | sign(), verify() | Theoretical attack vector |
+| M4 | Ciphertext empty check missing | decrypt() | Edge case not handled |
+
+### Recommendations
+
+1. **Add input validation helper:**
+```kotlin
+fun validateAESKey(key: ByteArray) {
+    require(key.size == 32) { "AES key must be 32 bytes" }
+}
+fun validateNonce(nonce: ByteArray) {
+    require(nonce.size == NONCE_SIZE) { "Nonce must be $NONCE_SIZE bytes" }
+}
+```
+
+2. **Distinguish crypto failures:**
+```kotlin
+sealed class DecryptResult {
+    data class Success(val plaintext: String) : DecryptResult()
+    object InvalidFormat : DecryptResult()
+    object AuthenticationFailed : DecryptResult()  // GCM tag mismatch = tampering
+}
+```
+
+3. **Add replay protection to KEX:**
+```kotlin
+// Include session nonce and timestamp in signature
+val messageToSign = "$senderAddress|$publicKey|$sessionNonce|$timestamp"
+```
+
+4. **Use consistent salt in ECIES:**
+```kotlin
+private val ECIES_SALT = "ZCHAT_ECIES_SALT_V1".toByteArray(Charsets.UTF_8)
+```
+
+---
+
+## DOCUMENTATION FIXES APPLIED (2026-01-20)
+
+Fixed incorrect CONV_ID_LENGTH in documentation:
+- **Reality:** 8 chars (A-Z, 0-9) = ~41 bits entropy
+- **Was documented as:** 12 chars = ~71 bits entropy
+
+Files updated:
+- ARCHITECTURE.md
+- SYSTEM_PROMPT.md
+- DECISIONS.md
+- ANDROID_FIX_PLAN.md
+- ANDROID_TEST_REQUIREMENTS.md
+- DEVELOPMENT_STANDARDS.md
+- IMPLEMENTATION_STEPS.md
+
+---
+
 *Document will be updated as issues are fixed.*

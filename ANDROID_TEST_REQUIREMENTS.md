@@ -137,7 +137,7 @@ fun `generateAddressHash differs for different addresses`()
 #### 2. Conversation ID Tests
 ```kotlin
 @Test
-fun `generateConversationId returns 12 alphanumeric characters`()
+fun `generateConversationId returns 8 alphanumeric characters`()
 
 @Test
 fun `generateConversationId produces unique IDs`()
@@ -308,7 +308,7 @@ abstract class ZchatBaseTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     protected val testAddress = "u1testaddress123456789"
-    protected val testConversationId = "abc123xyz456"
+    protected val testConversationId = "ABC12XYZ"  // 8 chars: uppercase + digits only
 }
 ```
 

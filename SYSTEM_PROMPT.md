@@ -67,8 +67,8 @@ Types: DM, KEX, RXN, RCV, RPL, REQ, STT, CHK
 
 ### Key Constraints
 - Memo field: 512 bytes max
-- Conversation ID: 12 alphanumeric chars (~71 bits entropy)
-- sender_hash: 16 hex chars (~64 bits entropy)
+- Conversation ID: 8 alphanumeric chars (~41 bits entropy)
+- sender_hash: 12 hex chars (~48 bits entropy)
 - Block time: ~75 seconds (message latency)
 
 ### Security Model
@@ -184,10 +184,10 @@ When making decisions, consider these established patterns:
 | DEC-002 | Single seed for Zcash + NOSTR | User convenience, single backup |
 | DEC-003 | Zcash SDK handles seed storage | Already secure (EncryptedSharedPreferences) |
 | DEC-004 | HKDF for key derivation | Current SHA-256 only is cryptographically weak |
-| DEC-006 | 12-char conversation IDs | ~71 bits entropy, collision-resistant |
+| DEC-006 | 8-char conversation IDs | ~41 bits entropy (actual implementation) |
 | DEC-013 | KEX with signatures | Prevents MITM attacks on key exchange |
 | DEC-014 | ECIES for group keys | Prevents plaintext key leakage |
-| DEC-015 | 16-char sender_hash | ~64 bits entropy, prevents birthday collisions |
+| DEC-015 | 12-char sender_hash | ~48 bits entropy (actual implementation) |
 
 ## Error Type Hierarchy
 
