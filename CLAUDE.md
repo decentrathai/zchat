@@ -178,14 +178,22 @@ See `DEVELOPMENT_STANDARDS.md` for complete reference with examples.
 **1. ZMSG Protocol Pattern (v4)**
 All messages follow the ZMSG v4 pipe-delimited format:
 ```
-ZMSG|4|<type>|<conv_id>|<sender_hash>|<payload...>
+INIT message:  ZMSG|v4|<convID>|INIT|<sender_address>|<message>
+Reply message: ZMSG|v4|<convID>|<sender_hash>|<message>
 
 Examples:
-ZMSG|4|DM|abc123xyz456|a1b2c3d4e5f6g7h8|<encrypted_content>
-ZMSG|4|KEX|abc123xyz456|a1b2c3d4e5f6g7h8|<pubkey_b64>|<signature_b64>
-ZMSG|4|RXN|abc123xyz456|a1b2c3d4e5f6g7h8|<target_txid>|👍
+ZMSG|v4|ABC12345|INIT|u1address...|Hello, this is my first message
+ZMSG|v4|ABC12345|a1b2c3d4e5f67890|This is a reply message
+ZMSG|v4|ABC12345|KEX|a1b2c3d4e5f67890|<pubkey_b64>|<signature_b64>
+ZMSG|v4|ABC12345|ADDR|a1b2c3d4e5f67890|<new_address>|<signature>
+
+Chunked (for long messages):
+ZMSG|v4c|1/N|<convID>|INIT|<address>|<message_part>
+ZMSG|v4c|M/N|CONT|<message_part>
 ```
-Note: Group messages use separate ZGRP protocol, time-locked use ZTL protocol.
+- convID: 8 characters (A-Z, 0-9) - uniquely identifies the conversation
+- sender_hash: 16 hex characters (SHA-256 of address, first 8 bytes)
+- Group messages use separate ZGRP protocol (ZMSG:3.0:GROUP:), time-locked use ZTL protocol
 See `ARCHITECTURE.md` Section 3 for complete protocol specification.
 
 **2. Result Type Pattern**
@@ -543,10 +551,25 @@ $HOME/android-sdk/platform-tools/adb devices
 
 ### APK Output Location
 - Debug APK: `app/build/outputs/apk/zcashmainnetFoss/debug/`
-- After build, copy to Windows Downloads:
+
+### Deploy to zsend.xyz (ALWAYS DO AFTER BUILD)
 ```bash
-cp /home/yourt/zchat-android/app/build/outputs/apk/zcashmainnetFoss/debug/*.apk /mnt/c/Users/yourt/Downloads/
+cd /home/yourt/zchat-android
+
+# Deploy with version name (recommended)
+./deploy-apk.sh "2.8.2-fix-name"
+
+# Or deploy with auto-date
+./deploy-apk.sh
 ```
+
+This script automatically:
+1. Removes old APKs from `/home/yourt/`
+2. Copies new APK with version name
+3. Updates timestamp (backend serves newest)
+4. Copies to Windows Downloads
+
+**Backend APK serving:** api.zsend.xyz serves files matching `*zchat*.apk` from `/home/yourt/`, sorted by mtime (newest first).
 
 ### Key Files to Modify for ZCHAT Branding
 1. `gradle.properties` - `ZCASH_RELEASE_APP_NAME`

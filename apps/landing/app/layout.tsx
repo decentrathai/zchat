@@ -63,9 +63,9 @@ export const metadata: Metadata = {
       "Send private messages as shielded Zcash transactions. End-to-end encrypted, zero metadata, fully anonymous. The most private messenger ever built.",
     images: [
       {
-        url: "https://zsend.xyz/images/mobile-screenshot.png",
-        width: 577,
-        height: 1280,
+        url: "https://zsend.xyz/x-cover.jpg",
+        width: 1365,
+        height: 768,
         alt: "ZCHAT - Private Encrypted Messenger on Zcash",
       },
     ],
@@ -76,7 +76,7 @@ export const metadata: Metadata = {
     title: "ZCHAT - Private Encrypted Messenger",
     description:
       "Send private messages as shielded Zcash transactions. End-to-end encrypted, zero metadata, fully anonymous.",
-    images: ["https://zsend.xyz/images/mobile-screenshot.png"],
+    images: ["https://zsend.xyz/x-cover.jpg"],
   },
   alternates: {
     canonical: "https://zsend.xyz",
