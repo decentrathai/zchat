@@ -45,6 +45,18 @@ function getPrismaErrorCode(error: unknown): string | undefined {
   }
   return undefined;
 }
+
+// Type predicate for JWT payload validation (Boris Cherny best practice)
+function isValidJwtPayload(obj: unknown): obj is { userId: number; username: string } {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'userId' in obj &&
+    'username' in obj &&
+    typeof (obj as Record<string, unknown>).userId === 'number' &&
+    typeof (obj as Record<string, unknown>).username === 'string'
+  );
+}
 import { syncWallet, sendTransaction, getMessages, getUserWalletDbPath, ensureWalletDbDir, getPrimaryAddress, getBalance, buildTransaction } from './wallet';
 
 // JWT Secret - REQUIRED in production
@@ -209,6 +221,9 @@ server.addContentTypeParser('application/json', { parseAs: 'string' }, (req, bod
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || [
   'https://app.zsend.xyz',
   'https://zsend.xyz',
+  'https://zchat.sh',
+  'https://app.zchat.sh',
+  'https://api.zchat.sh',
   'http://localhost:3000'  // Development only
 ];
 
@@ -256,18 +271,13 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply) {
   try {
     const decoded = jwt.verify(token, jwtSecret);
 
-    // Runtime validation of JWT payload structure (#R3-H1)
-    if (
-      typeof decoded !== 'object' ||
-      decoded === null ||
-      typeof (decoded as Record<string, unknown>).userId !== 'number' ||
-      typeof (decoded as Record<string, unknown>).username !== 'string'
-    ) {
+    // Runtime validation of JWT payload structure using type predicate
+    if (!isValidJwtPayload(decoded)) {
       reply.code(401);
       throw new Error('Invalid token payload');
     }
 
-    const payload = decoded as { userId: number; username: string };
+    const payload = decoded; // Type narrowed by predicate — no assertion needed
 
     // Attach user info to request
     request.user = {
@@ -283,6 +293,88 @@ async function authenticate(request: FastifyRequest, reply: FastifyReply) {
 // Health check route
 server.get('/health', async (request, reply) => {
   return { ok: true };
+});
+
+// App version check — public, no auth
+// Returns latest APK version info extracted from filename in APK_DIR
+server.get('/app/version', async (request, reply) => {
+  try {
+    const fsPromises = fs.promises;
+    const allFiles = await fsPromises.readdir(APK_DIR);
+    const apkFiles = allFiles.filter(file => file.endsWith('.apk') && file.includes('zchat'));
+
+    if (apkFiles.length === 0) {
+      reply.code(404);
+      return { error: 'No APK found' };
+    }
+
+    // Sort by mtime (newest first), same as download endpoint
+    const filesWithStats = await Promise.all(
+      apkFiles.map(async (file) => {
+        const stat = await fsPromises.stat(path.join(APK_DIR, file));
+        return { file, mtime: stat.mtime.getTime() };
+      })
+    );
+    filesWithStats.sort((a, b) => b.mtime - a.mtime);
+
+    const latestApk = filesWithStats[0].file;
+    const versionMatch = latestApk.match(/zchat-v(\d+\.\d+\.\d+)/);
+
+    if (!versionMatch) {
+      reply.code(404);
+      return { error: 'Could not extract version from APK filename' };
+    }
+
+    const versionName = versionMatch[1];
+    const parts = versionName.split('.').map(Number);
+    const versionCode = parts[0] * 10000 + parts[1] * 100 + parts[2];
+
+    server.log.info({ versionName, versionCode, apk: latestApk }, 'Version check served');
+
+    return { versionCode, versionName, downloadUrl: 'https://api.zsend.xyz/app/download' };
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Version check failed');
+    reply.code(500);
+    return { error: 'Failed to check version' };
+  }
+});
+
+// Public APK download — serves the latest APK file directly (for in-app updates)
+server.get('/app/download', async (request, reply) => {
+  try {
+    const fsPromises = fs.promises;
+    const allFiles = await fsPromises.readdir(APK_DIR);
+    const apkFiles = allFiles.filter(file => file.endsWith('.apk') && file.includes('zchat'));
+
+    if (apkFiles.length === 0) {
+      reply.code(404);
+      return { error: 'No APK found' };
+    }
+
+    const filesWithStats = await Promise.all(
+      apkFiles.map(async (file) => {
+        const stat = await fsPromises.stat(path.join(APK_DIR, file));
+        return { file, mtime: stat.mtime.getTime(), size: stat.size };
+      })
+    );
+    filesWithStats.sort((a, b) => b.mtime - a.mtime);
+
+    const latest = filesWithStats[0];
+    const apkPath = path.join(APK_DIR, latest.file);
+
+    server.log.info({ apk: latest.file, size: latest.size }, 'Public APK download started');
+
+    reply.header('Content-Disposition', `attachment; filename="${latest.file}"`);
+    reply.header('Content-Type', 'application/vnd.android.package-archive');
+    reply.header('Content-Length', latest.size);
+
+    const stream = fs.createReadStream(apkPath);
+    return reply.send(stream);
+  } catch (error) {
+    server.log.error({ error: getErrorMessage(error) }, 'Public APK download failed');
+    reply.code(500);
+    return { error: 'Failed to download APK' };
+  }
 });
 
 // =====================
@@ -438,7 +530,7 @@ server.post<{ Params: { id: string }; Body: { expiresInDays?: number } }>(
     await authenticateAdmin(request, reply);
 
     const whitelistId = parseInt(request.params.id, 10);
-    const expiresInDays = request.body?.expiresInDays || 7; // Default 7 days
+    const expiresInDays = request.body?.expiresInDays || 30; // Default 30 days
 
     if (isNaN(whitelistId)) {
       reply.code(400);
@@ -605,67 +697,69 @@ server.post<{ Params: { id: string }; Body: { code: string; customMessage?: stri
             <meta charset="utf-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
           </head>
-          <body style="margin: 0; padding: 0; background-color: #050510; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
-            <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px;">
+          <body style="margin: 0; padding: 0; background-color: #0a0a0f; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;">
+            <div style="max-width: 600px; margin: 0 auto; padding: 40px 20px; background-color: #0a0a0f;">
               <!-- Header -->
               <div style="text-align: center; margin-bottom: 40px;">
-                <h1 style="color: #22d3ee; font-size: 32px; margin: 0;">ZCHAT</h1>
-                <p style="color: #9ca3af; margin-top: 8px;">Private messaging on Zcash</p>
+                <h1 style="color: #00d4ff; font-size: 32px; margin: 0; text-shadow: 0 0 10px rgba(0,212,255,0.5);">ZCHAT</h1>
+                <p style="color: #666666; margin-top: 8px; font-size: 14px;">Private messaging on Zcash</p>
               </div>
 
               <!-- Congratulations Banner -->
-              <div style="background: linear-gradient(135deg, rgba(34,211,238,0.2) 0%, rgba(139,92,246,0.15) 100%); border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
-                <p style="font-size: 28px; margin: 0 0 8px 0;">&#127881;</p>
-                <h2 style="color: #22d3ee; font-size: 20px; margin: 0 0 8px 0;">Congratulations!</h2>
-                <p style="color: #d1d5db; margin: 0; font-size: 15px;">You're now part of our exclusive testing team</p>
+              <div style="background-color: #1a1a2e; border: 1px solid #00d4ff; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 24px;">
+                <p style="font-size: 32px; margin: 0 0 12px 0;">&#127881;</p>
+                <h2 style="color: #00d4ff; font-size: 22px; margin: 0 0 8px 0; font-weight: 600;">Congratulations!</h2>
+                <p style="color: #b0b0b0; margin: 0; font-size: 15px;">You're now part of our exclusive testing team</p>
               </div>
 
               ${customMessage ? `
               <!-- Personal Message from Admin -->
-              <div style="background: rgba(139,92,246,0.1); border-left: 3px solid #a855f7; border-radius: 0 8px 8px 0; padding: 16px 20px; margin-bottom: 24px;">
-                <p style="color: #d1d5db; margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${escapeHtml(customMessage)}</p>
+              <div style="background-color: #1a1a2e; border-left: 4px solid #a855f7; border-radius: 0 8px 8px 0; padding: 16px 20px; margin-bottom: 24px;">
+                <p style="color: #e0e0e0; margin: 0; font-size: 15px; line-height: 1.6; white-space: pre-wrap;">${escapeHtml(customMessage)}</p>
               </div>
               ` : ''}
 
               <!-- Main Content -->
-              <div style="background: linear-gradient(135deg, rgba(34,211,238,0.1) 0%, rgba(139,92,246,0.05) 100%); border: 1px solid rgba(34,211,238,0.3); border-radius: 16px; padding: 32px;">
-                <h2 style="color: #ffffff; font-size: 24px; margin: 0 0 16px 0;">Your Download Code</h2>
-                <p style="color: #d1d5db; line-height: 1.6; margin: 0 0 24px 0;">
+              <div style="background-color: #12121a; border: 1px solid #333; border-radius: 16px; padding: 32px;">
+                <h2 style="color: #00d4ff; font-size: 24px; margin: 0 0 16px 0; font-weight: 600;">Your Download Code</h2>
+                <p style="color: #cccccc; line-height: 1.7; margin: 0 0 24px 0; font-size: 15px;">
                   Thank you for believing in privacy! Your support means the world to us, and we won't forget it. Use the code below to download the app:
                 </p>
 
                 <!-- Code Box -->
-                <div style="background: #111827; border: 2px solid #22d3ee; border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
-                  <code style="font-size: 32px; font-weight: bold; color: #22d3ee; letter-spacing: 4px;">${code}</code>
+                <div style="background-color: #0a0a12; border: 2px solid #00d4ff; border-radius: 12px; padding: 24px; text-align: center; margin-bottom: 24px;">
+                  <code style="font-size: 36px; font-weight: bold; color: #00ffcc; letter-spacing: 6px; font-family: 'Courier New', monospace;">${code}</code>
                 </div>
 
-                <p style="color: #9ca3af; font-size: 14px; margin: 0 0 24px 0;">
-                  This code expires in 7 days and can only be used once.
+                <p style="color: #999999; font-size: 14px; margin: 0 0 24px 0; text-align: center;">
+                  This code expires in 30 days and can be used multiple times.
                 </p>
 
                 <!-- CTA Button -->
-                <a href="https://zsend.xyz/#download" style="display: inline-block; background: #22d3ee; color: #000000; font-weight: 600; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-size: 16px;">
-                  Download ZCHAT
-                </a>
+                <div style="text-align: center;">
+                  <a href="https://zsend.xyz/#download" style="display: inline-block; background-color: #00d4ff; color: #000000; font-weight: 700; text-decoration: none; padding: 16px 40px; border-radius: 8px; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;">
+                    Download ZCHAT
+                  </a>
+                </div>
               </div>
 
               <!-- Instructions -->
-              <div style="margin-top: 32px; padding: 24px; background: rgba(255,255,255,0.03); border-radius: 12px;">
-                <h3 style="color: #ffffff; font-size: 16px; margin: 0 0 12px 0;">How to download:</h3>
-                <ol style="color: #9ca3af; margin: 0; padding-left: 20px; line-height: 1.8;">
-                  <li>Visit <a href="https://zsend.xyz" style="color: #22d3ee;">zsend.xyz</a></li>
+              <div style="margin-top: 32px; padding: 24px; background-color: #12121a; border: 1px solid #333; border-radius: 12px;">
+                <h3 style="color: #00d4ff; font-size: 16px; margin: 0 0 16px 0; font-weight: 600;">How to download:</h3>
+                <ol style="color: #b0b0b0; margin: 0; padding-left: 24px; line-height: 2;">
+                  <li>Visit <a href="https://zsend.xyz" style="color: #00d4ff; text-decoration: underline;">zsend.xyz</a></li>
                   <li>Click "I have a download code"</li>
-                  <li>Enter your code: <strong style="color: #22d3ee;">${code}</strong></li>
+                  <li>Enter your code: <strong style="color: #00ffcc;">${code}</strong></li>
                   <li>Install the APK on your Android device</li>
                 </ol>
               </div>
 
               <!-- Footer -->
-              <div style="margin-top: 40px; text-align: center; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 24px;">
-                <p style="color: #6b7280; font-size: 12px; margin: 0;">
+              <div style="margin-top: 40px; text-align: center; border-top: 1px solid #333; padding-top: 24px;">
+                <p style="color: #666666; font-size: 12px; margin: 0; line-height: 1.8;">
                   ZCHAT - The most private messenger in the world<br>
-                  <a href="https://zsend.xyz" style="color: #22d3ee;">zsend.xyz</a> |
-                  <a href="https://x.com/zchat_app" style="color: #22d3ee;">@zchat_app</a>
+                  <a href="https://zsend.xyz" style="color: #00d4ff;">zsend.xyz</a> |
+                  <a href="https://x.com/zchat_app" style="color: #00d4ff;">@zchat_app</a>
                 </p>
               </div>
             </div>
@@ -721,16 +815,10 @@ server.post<{ Body: { code: string } }>('/download/verify-code', async (request,
       return { error: 'Invalid download code' };
     }
 
-    // Check if already used
-    if (downloadCode.used) {
-      reply.code(400);
-      return { error: 'This download code has already been used' };
-    }
-
-    // Check if expired
+    // Check if expired (codes can be reused for re-downloads)
     if (new Date() > downloadCode.expiresAt) {
       reply.code(400);
-      return { error: 'This download code has expired' };
+      return { error: 'This download code has expired. Please request a new code.' };
     }
 
     // Check token limit to prevent memory exhaustion (#R3-M4)
@@ -891,8 +979,11 @@ server.post<{ Body: { username: string; password: string } }>('/auth/register', 
     return { id: newUser.id, username: newUser.username };
   } catch (error) {
     // Check if error is due to unique constraint violation
-    const prismaError = error as { code?: string; meta?: { target?: string[] } };
-    if (prismaError.code === 'P2002' && prismaError.meta?.target?.includes('username')) {
+    if (
+      error && typeof error === 'object' &&
+      'code' in error && (error as { code: string }).code === 'P2002' &&
+      'meta' in error && ((error as { meta?: { target?: string[] } }).meta?.target?.includes('username'))
+    ) {
       reply.code(400);
       return { error: 'Username already taken' };
     }
