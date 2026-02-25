@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 
-// Mock environment variables BEFORE importing server
-vi.stubEnv('JWT_SECRET', 'test-jwt-secret');
-vi.stubEnv('ADMIN_SECRET', 'test-admin-secret');
-vi.stubEnv('ZCASH_RPC_URL', 'http://mock-zcash-rpc');
-vi.stubEnv('NODE_ENV', 'test');
-vi.stubEnv('APK_DIR', '/tmp/test-apk');
+// Set environment variables in vi.hoisted so they run BEFORE module imports
+// (vi.stubEnv is not hoisted and runs too late for ESM imports)
+vi.hoisted(() => {
+  process.env.JWT_SECRET = 'test-jwt-secret';
+  process.env.ADMIN_SECRET = 'test-admin-secret';
+  process.env.ZCASH_RPC_URL = 'http://mock-zcash-rpc';
+  process.env.NODE_ENV = 'test';
+  process.env.APK_DIR = '/tmp/test-apk';
+});
 
 // Use vi.hoisted to create mock objects that are available during vi.mock hoisting
 const { mockPrismaWhitelist, mockPrismaDownloadCode, mockPrismaUser } = vi.hoisted(() => ({
@@ -68,11 +71,15 @@ vi.mock('resend', () => ({
 }));
 
 // Now import the ACTUAL server - this tests the real code
-import { server, jwtSecret, adminSecret } from './server';
+import { server } from './server';
+
+// Test secrets match the stubbed env vars above
+const testJwtSecret = 'test-jwt-secret';
+const testAdminSecret = 'test-admin-secret';
 
 // Helper to create a valid JWT token
 function createTestToken(userId: number, username: string): string {
-  return jwt.sign({ userId, username }, jwtSecret, { expiresIn: '1h' });
+  return jwt.sign({ userId, username }, testJwtSecret, { expiresIn: '1h' });
 }
 
 // Single test setup/teardown for all tests
@@ -211,7 +218,7 @@ describe('Backend API Tests - Testing ACTUAL server.ts code', () => {
         const response = await server.inject({
           method: 'GET',
           url: '/admin/whitelist',
-          headers: { 'x-admin-secret': adminSecret },
+          headers: { 'x-admin-secret': testAdminSecret },
         });
 
         expect(response.statusCode).toBe(200);
@@ -447,7 +454,7 @@ describe('Backend API Tests - Testing ACTUAL server.ts code', () => {
         expect(response.json().error).toBe('Invalid download code');
       });
 
-      it('returns error for already used code', async () => {
+      it('allows reuse of already used code (codes are reusable for re-downloads)', async () => {
         mockPrismaDownloadCode.findUnique.mockResolvedValueOnce({
           id: 1,
           code: 'USEDCODE',
@@ -462,8 +469,8 @@ describe('Backend API Tests - Testing ACTUAL server.ts code', () => {
           payload: { code: 'USEDCODE' },
         });
 
-        expect(response.statusCode).toBe(400);
-        expect(response.json().error).toBe('This download code has already been used');
+        expect(response.statusCode).toBe(200);
+        expect(response.json().downloadUrl).toBeDefined();
       });
 
       it('returns error for expired code', async () => {
@@ -482,7 +489,7 @@ describe('Backend API Tests - Testing ACTUAL server.ts code', () => {
         });
 
         expect(response.statusCode).toBe(400);
-        expect(response.json().error).toBe('This download code has expired');
+        expect(response.json().error).toBe('This download code has expired. Please request a new code.');
       });
 
       it('returns download URL for valid code', async () => {
@@ -622,7 +629,7 @@ describe('JWT Authentication Edge Cases', () => {
   it('rejects request with expired token', async () => {
     const expiredToken = jwt.sign(
       { userId: 1, username: 'testuser' },
-      jwtSecret,
+      testJwtSecret,
       { expiresIn: '-1h' }
     );
 

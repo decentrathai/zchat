@@ -81,7 +81,8 @@ if (!path.isAbsolute(APK_DIR)) {
   throw new Error(`APK_DIR must be an absolute path, got: ${APK_DIR}`);
 }
 if (!fs.existsSync(APK_DIR)) {
-  console.warn(`Warning: APK_DIR does not exist: ${APK_DIR}`);
+  // Log without exposing path (console.warn runs before server init)
+  console.warn('Warning: APK_DIR does not exist');
 }
 if (fs.existsSync(APK_DIR) && !fs.statSync(APK_DIR).isDirectory()) {
   throw new Error(`APK_DIR is not a directory: ${APK_DIR}`);
@@ -771,7 +772,7 @@ server.post<{ Params: { id: string }; Body: { code: string; customMessage?: stri
       if (error) {
         server.log.error({ error }, 'Failed to send email');
         reply.code(500);
-        return { error: 'Failed to send email: ' + error.message };
+        return { error: 'Failed to send email. Please try again later.' };
       }
 
       server.log.info({ email: entry.email, codePrefix: code.substring(0, 2) + '***' }, 'Download code email sent');
@@ -1126,7 +1127,7 @@ server.post<{ Body: { address: string } }>('/me/wallet', async (request, reply) 
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to link wallet address');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to link wallet address' };
+    return { error: 'Failed to link wallet address' };
   }
 });
 
@@ -1252,7 +1253,7 @@ server.post<{ Body: { txHex: string } }>('/zcash/broadcast', async (request, rep
 
     // Return error response
     reply.code(500);
-    return { error: errorMsg || 'Failed to broadcast transaction' };
+    return { error: 'Failed to broadcast transaction' };
   }
 });
 
@@ -1294,7 +1295,7 @@ server.get('/zcash/network-info', async (request, reply) => {
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to fetch Zcash network info');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to fetch Zcash network info' };
+    return { error: 'Failed to fetch Zcash network info' };
   }
 });
 
@@ -1312,7 +1313,7 @@ server.get('/wallet/address', async (request, reply) => {
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to get wallet address');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to get wallet address' };
+    return { error: 'Failed to get wallet address' };
   }
 });
 
@@ -1329,7 +1330,7 @@ server.get('/wallet/balance', async (request, reply) => {
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to get wallet balance');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to get wallet balance' };
+    return { error: 'Failed to get wallet balance' };
   }
 });
 
@@ -1346,7 +1347,7 @@ server.post('/wallet/sync', async (request, reply) => {
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to sync wallet');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to sync wallet' };
+    return { error: 'Failed to sync wallet' };
   }
 });
 
@@ -1366,7 +1367,7 @@ server.get<{ Querystring: { sinceHeight?: string } }>('/messages', async (reques
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Failed to get messages');
     reply.code(500);
-    return { error: getErrorMessage(error) || 'Failed to get messages' };
+    return { error: 'Failed to get messages' };
   }
 });
 
@@ -1400,13 +1401,19 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
     return { error: 'to address is required and must be a string' };
   }
 
+  // Validate Zcash address format (unified, sapling, or transparent)
+  const isValidZcashAddress = /^(u1[a-z0-9]{100,}|zs1[a-z0-9]{70,}|t1[a-zA-Z0-9]{33})$/i.test(to);
+  if (!isValidZcashAddress) {
+    reply.code(400);
+    return { error: 'Invalid Zcash address format' };
+  }
+
   if (typeof amount !== 'number' || amount <= 0) {
     reply.code(400);
     return { error: 'amount is required and must be a positive number (in zatoshis)' };
   }
 
   // Max amount validation: 21 million ZEC = 2.1e15 zatoshis (#R3-H4)
-  // Use Number.MAX_SAFE_INTEGER as upper bound for safety
   const MAX_ZATOSHIS = 2_100_000_000_000_000; // 21 million ZEC
   if (amount > MAX_ZATOSHIS || !Number.isInteger(amount)) {
     reply.code(400);
@@ -1416,6 +1423,12 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
   if (typeof memo !== 'string') {
     reply.code(400);
     return { error: 'memo must be a string' };
+  }
+
+  // Memo size limit: 512 bytes max for Zcash shielded transactions
+  if (Buffer.byteLength(memo, 'utf-8') > 512) {
+    reply.code(400);
+    return { error: 'memo exceeds 512 byte limit' };
   }
 
   try {
@@ -1434,9 +1447,9 @@ server.post<{ Body: { to: string; amount: number; memo: string } }>('/wallet/sen
     const errorMsg = getErrorMessage(error);
     server.log.error({ error: errorMsg }, 'Failed to send transaction');
 
-    // Return error response
+    // Return generic error (don't leak internal details to client)
     reply.code(500);
-    return { error: errorMsg || 'Failed to send transaction' };
+    return { error: 'Failed to send transaction' };
   }
 });
 
@@ -1607,8 +1620,8 @@ server.post<{ Params: { id: string } }>('/admin/contacts/:id/read', async (reque
   }
 });
 
-// Export server for testing
-export { server, prisma, jwtSecret, adminSecret };
+// Export server for testing (secrets NOT exported — tests use env vars)
+export { server, prisma };
 
 // Graceful shutdown handlers (LOW #B2)
 const gracefulShutdown = async (signal: string) => {
@@ -1637,7 +1650,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 const start = async () => {
   try {
-    await server.listen({ port: 4000 });
+    await server.listen({ port: 4000, host: '127.0.0.1' });
     server.log.info('Server listening on port 4000'); // #R3-L1: Use server.log for consistency
   } catch (err) {
     server.log.error(err);
