@@ -1,0 +1,5 @@
+Contact: mailto:contact@zsend.xyz
+Contact: https://github.com/decentrathai/zchat/security
+Preferred-Languages: en
+Canonical: https://zsend.xyz/.well-known/security.txt
+Policy: https://zsend.xyz/security

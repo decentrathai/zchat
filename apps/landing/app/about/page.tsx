@@ -12,6 +12,9 @@ export const metadata: Metadata = {
     description:
       "Learn about ZCHAT's features, protocol specification, and development roadmap. Private encrypted messaging on Zcash blockchain.",
   },
+  alternates: {
+    canonical: "https://zsend.xyz/about",
+  },
 }
 
 export default function AboutPage() {

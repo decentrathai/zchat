@@ -229,6 +229,9 @@ export interface ChatMessage {
   value_zatoshis: number;
   memo: string;
   to_address?: string;
+  from_address?: string | null;
+  type?: string;
+  new_address?: string;
 }
 
 export async function getMessages(token: string, sinceHeight?: number): Promise<{ messages: ChatMessage[] }> {

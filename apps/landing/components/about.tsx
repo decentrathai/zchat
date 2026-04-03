@@ -13,7 +13,7 @@ export function About() {
     { name: "ZMSG v4 Protocol", status: "done", description: "Conversation ID-based threading" },
     { name: "Private 1:1 Messaging", status: "done", description: "End-to-end encrypted via shielded transactions" },
     { name: "Message Chunking", status: "done", description: "Split large messages across multiple memos" },
-    { name: "Contact Management", status: "done", description: "Save, nickname, and organize contacts" },
+    { name: "Contact Management", status: "in_progress", description: "Save and organize contacts (nicknames coming soon)" },
     { name: "Conversation History", status: "done", description: "Persistent chat history with threading" },
     { name: "ZEC Payments", status: "done", description: "Send payments with messages" },
     { name: "Read Receipts (ZRCPT)", status: "done", description: "Optional delivery confirmations" },
@@ -101,7 +101,7 @@ export function About() {
           <div className="mb-12 rounded-xl border border-cyan-500/20 bg-cyan-500/5 p-6 text-center">
             <p className="text-lg leading-relaxed text-gray-300">
               ZCHAT is a privacy-first encrypted messenger that sends chat messages as shielded Zcash
-              transactions. Every message is end-to-end encrypted with zero metadata exposure. Built
+              transactions. Every message is end-to-end encrypted with on-chain metadata hidden by Zcash shielded transactions. Built
               for the Zypherpunk Hackathon 2024-2025.
             </p>
           </div>
@@ -152,7 +152,7 @@ export function About() {
             <p className="text-sm text-gray-400">
               Full protocol specification available in the{" "}
               <a
-                href="https://github.com/yourt/zchat-android"
+                href="https://github.com/decentrathai/zchat-android"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-cyan-400 underline hover:text-cyan-300"

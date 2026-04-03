@@ -75,9 +75,9 @@ export default function DeveloperTools({
       }
 
       setRpcStatus(payload);
-    } catch (error: any) {
+    } catch (error: unknown) {
       setRpcStatus(null);
-      setRpcStatusError(error?.message || 'Failed to fetch Zcash RPC status');
+      setRpcStatusError(error instanceof Error ? error.message : 'Failed to fetch Zcash RPC status');
     } finally {
       setIsRpcLoading(false);
     }

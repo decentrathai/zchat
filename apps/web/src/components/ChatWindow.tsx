@@ -176,11 +176,12 @@ export default function ChatWindow({
       setTimeout(() => {
         setSendStatus(null);
       }, 5000);
-    } catch (error: any) {
+    } catch (error: unknown) {
       // Error sending message
+      const msg = error instanceof Error ? error.message : String(error);
       setSendStatus({
         type: 'error',
-        message: `Failed to send message: ${error.message || String(error)}`
+        message: `Failed to send message: ${msg}`
       });
     } finally {
       setIsSending(false);

@@ -332,7 +332,19 @@ server.get('/app/version', async (request, reply) => {
 
     server.log.info({ versionName, versionCode, apk: latestApk }, 'Version check served');
 
-    return { versionCode, versionName, downloadUrl: 'https://api.zsend.xyz/app/download' };
+    // Read changelog if available and version matches
+    let changelog: Array<{ type: string; text: string }> = [];
+    try {
+      const changelogPath = path.join(APK_DIR, 'changelog.json');
+      const changelogData = JSON.parse(await fsPromises.readFile(changelogPath, 'utf-8'));
+      if (changelogData.version === versionName && Array.isArray(changelogData.changes)) {
+        changelog = changelogData.changes;
+      }
+    } catch {
+      // changelog.json missing or invalid — return empty array
+    }
+
+    return { versionCode, versionName, downloadUrl: 'https://api.zsend.xyz/app/download', changelog };
   } catch (error) {
     server.log.error({ error: getErrorMessage(error) }, 'Version check failed');
     reply.code(500);

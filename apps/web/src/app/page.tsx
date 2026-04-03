@@ -1,24 +1,29 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { register, login, linkWalletAddress, broadcastTransaction, getAuthToken, getWalletAddress, getWalletBalance, syncWallet as apiSyncWallet, getMessages as apiGetMessages } from '@/lib/api';
+import { register, login, linkWalletAddress, broadcastTransaction, getAuthToken, getWalletAddress, getWalletBalance, syncWallet as apiSyncWallet, getMessages as apiGetMessages, type ChatMessage } from '@/lib/api';
 import ChatSidebar from '@/components/ChatSidebar';
 import ChatWindow from '@/components/ChatWindow';
 import DeveloperTools from '@/components/DeveloperTools';
 import { useTheme } from '@/components/theme/ThemeProvider';
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
+}
+
 // Type for the wallet core module
 type WalletCore = {
   init_new_wallet: () => string;
   get_backup_phrase: () => string;
-  send_message_dm: (to_address: string, text: string) => any; // Returns JsValue (JSON)
+  send_message_dm: (to_address: string, text: string) => string | { error?: string; txHex?: string; txid?: string }; // Returns JsValue (JSON)
   get_primary_address: () => string;
   get_lightwalletd_url: () => string;
   get_network_name: () => string;
   sync_wallet: () => string;
   get_balance: () => string;
-  list_messages: () => any; // Returns JsValue which becomes a JS array
-  regenerate_wallet_quiet: () => any; // Returns JsValue (JSON)
+  list_messages: () => unknown; // Returns JsValue which becomes a JS array
+  regenerate_wallet_quiet: () => unknown; // Returns JsValue (JSON)
   build_rotation_memo: (new_address: string) => string;
   // New client-side wallet functions (seed never leaves browser)
   generate_mnemonic: () => string;
@@ -129,7 +134,7 @@ export default function Home() {
 
             // Also load messages
             const messagesResult = await apiGetMessages(token);
-            const transformedMessages: Message[] = messagesResult.messages.map((msg: any) => ({
+            const transformedMessages: Message[] = messagesResult.messages.map((msg: ChatMessage) => ({
               id: msg.txid,
               txid: msg.txid,
               // Use from_address from backend if available, otherwise infer from incoming flag
@@ -315,8 +320,8 @@ export default function Home() {
       try {
         await linkWalletAddress(loginResponse.token, address);
         setAuthMessage('Wallet created! Your seed phrase is shown in the sidebar. Please back it up!');
-      } catch (error: any) {
-        setAuthMessage(`Wallet created, but failed to link address: ${error.message}`);
+      } catch (error: unknown) {
+        setAuthMessage(`Wallet created, but failed to link address: ${getErrorMessage(error)}`);
       }
 
       setCurrentUser(loginResponse.user);
@@ -325,8 +330,8 @@ export default function Home() {
 
       // Show seed phrase immediately after registration
       setShowSeed(true);
-    } catch (error: any) {
-      setAuthMessage(error.message || 'Registration failed');
+    } catch (error: unknown) {
+      setAuthMessage(getErrorMessage(error) || 'Registration failed');
     }
   };
 
@@ -356,15 +361,15 @@ export default function Home() {
 
         // Load messages from backend (pass address since state update is async)
         await loadMessagesFromBackend(loginResponse.token, walletResponse.address);
-      } catch (error: any) {
-        setAuthMessage(`Logged in as ${loginResponse.user.username}, but failed to get wallet: ${error.message}`);
+      } catch (error: unknown) {
+        setAuthMessage(`Logged in as ${loginResponse.user.username}, but failed to get wallet: ${getErrorMessage(error)}`);
       }
 
       setCurrentUser(loginResponse.user);
       setUsername('');
       setPassword('');
-    } catch (error: any) {
-      setAuthMessage(error.message || 'Login failed');
+    } catch (error: unknown) {
+      setAuthMessage(getErrorMessage(error) || 'Login failed');
     }
   };
 
@@ -445,8 +450,8 @@ export default function Home() {
           setWalletActionStatus('Wallet regenerated successfully');
           // Show seed phrase after regeneration
           setShowSeed(true);
-        } catch (error: any) {
-          setWalletActionStatus(`Wallet regenerated, but failed to link address: ${error.message}`);
+        } catch (error: unknown) {
+          setWalletActionStatus(`Wallet regenerated, but failed to link address: ${getErrorMessage(error)}`);
         }
       } else {
         setWalletActionStatus('Wallet regenerated (not logged in, address not linked)');
@@ -454,8 +459,8 @@ export default function Home() {
 
       // Clear status after 5 seconds
       setTimeout(() => setWalletActionStatus(''), 5000);
-    } catch (error: any) {
-      setWalletActionStatus(`error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setWalletActionStatus(`error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -518,7 +523,7 @@ export default function Home() {
           const wasmResult = walletCore.send_message_dm(peerAddress, rotationMessage);
 
           // Parse the result
-          let parsedWasmResult: any;
+          let parsedWasmResult: { error?: string; txHex?: string; txid?: string };
           if (typeof wasmResult === 'string') {
             parsedWasmResult = JSON.parse(wasmResult);
           } else {
@@ -539,7 +544,7 @@ export default function Home() {
           } else {
             errorCount++;
           }
-        } catch (error: any) {
+        } catch (error: unknown) {
           console.error(`Failed to send rotation message to ${conversation.peerAddress}:`, error);
           errorCount++;
         }
@@ -558,14 +563,14 @@ export default function Home() {
         setWalletActionStatus(`Rotation complete: ${successCount} sent, ${errorCount} failed`);
         // Show seed phrase after regeneration
         setShowSeed(true);
-      } catch (error: any) {
-        setWalletActionStatus(`Rotation messages sent (${successCount}/${conversations.length}), but failed to link address: ${error.message}`);
+      } catch (error: unknown) {
+        setWalletActionStatus(`Rotation messages sent (${successCount}/${conversations.length}), but failed to link address: ${getErrorMessage(error)}`);
       }
 
       // Clear status after 8 seconds
       setTimeout(() => setWalletActionStatus(''), 8000);
-    } catch (error: any) {
-      setWalletActionStatus(`error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setWalletActionStatus(`error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -612,8 +617,8 @@ export default function Home() {
       }
       const network = walletCore.get_network_name();
       setDebugResult(`Network: ${network}`);
-    } catch (error: any) {
-      setDebugError(`Error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setDebugError(`Error: ${getErrorMessage(error)}`);
       setDebugResult('');
     }
   };
@@ -648,8 +653,8 @@ export default function Home() {
       }
 
       setDebugResult(`Init Result: ${initResult}\n\nBackup Phrase: ${phrase}\n\nPrimary Address: ${address}`);
-    } catch (error: any) {
-      setDebugError(`Error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setDebugError(`Error: ${getErrorMessage(error)}`);
       setDebugResult('');
     }
   };
@@ -660,7 +665,7 @@ export default function Home() {
       const result = await apiGetMessages(token);
       const myAddress = userAddress || currentUserAddress;
       // Transform backend messages to frontend format
-      const transformedMessages: Message[] = result.messages.map((msg: any) => ({
+      const transformedMessages: Message[] = result.messages.map((msg: ChatMessage) => ({
         id: msg.txid,
         txid: msg.txid,
         from_address: msg.incoming ? null : myAddress, // If incoming, sender is unknown (peer)
@@ -672,9 +677,9 @@ export default function Home() {
       }));
       setMessages(transformedMessages);
       setSyncResult('');
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Failed to load messages:', error);
-      setSyncResult(`error: ${error.message || String(error)}`);
+      setSyncResult(`error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -692,8 +697,8 @@ export default function Home() {
       setSyncResult(`Synced to height ${result.synced_to_height}`);
       // Reload messages after sync
       await loadMessagesFromBackend(token);
-    } catch (error: any) {
-      setSyncResult(`error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setSyncResult(`error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -709,8 +714,8 @@ export default function Home() {
       const balanceZatoshis = result.balance_zatoshis;
       const balanceZEC = balanceZatoshis / 100_000_000;
       setBalance(`${balanceZatoshis.toLocaleString()} zatoshis (${balanceZEC.toFixed(8)} ZEC)`);
-    } catch (error: any) {
-      setBalance(`error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setBalance(`error: ${getErrorMessage(error)}`);
     }
   };
 
@@ -748,8 +753,8 @@ export default function Home() {
 
       // Step 3: Reload messages
       await loadMessagesFromBackend(token, currentUserAddress);
-    } catch (error: any) {
-      setSyncResult(`error: ${error.message || String(error)}`);
+    } catch (error: unknown) {
+      setSyncResult(`error: ${getErrorMessage(error)}`);
     } finally {
       setIsUpdating(false);
     }
@@ -798,7 +803,7 @@ export default function Home() {
         const now = new Date();
         const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         setSyncResult(`Auto-synced to ${syncResult.synced_to_height} at ${timeStr}`);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Auto-update failed:', error);
         // Don't show error in UI for auto-updates to avoid spamming
       }

@@ -59,7 +59,7 @@ export default function AdminPage() {
 
     try {
       // Test the secret by making a request
-      const response = await fetch("https://api.zsend.xyz/admin/whitelist", {
+      const response = await fetch("/api/admin/whitelist", {
         headers: {
           "X-Admin-Secret": inputSecret,
         },
@@ -87,7 +87,7 @@ export default function AdminPage() {
   const loadEntries = async () => {
     setLoading(true)
     try {
-      const response = await fetch("https://api.zsend.xyz/admin/whitelist", {
+      const response = await fetch("/api/admin/whitelist", {
         headers: {
           "X-Admin-Secret": adminSecret,
         },
@@ -105,9 +105,11 @@ export default function AdminPage() {
 
   const generateCode = async (entry: WhitelistEntry) => {
     setGenerating(true)
+    setSendingEmail(true)
     setMessage(null)
     try {
-      const response = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}/generate-code`, {
+      // Generate a new code
+      const genResponse = await fetch(`/api/admin/whitelist/${entry.id}/generate-code`, {
         method: "POST",
         headers: {
           "X-Admin-Secret": adminSecret,
@@ -115,17 +117,34 @@ export default function AdminPage() {
         },
         body: JSON.stringify({}),
       })
-      const data = await response.json()
-      if (data.success) {
-        setMessage({ type: "success", text: `Code generated: ${data.code}` })
-        loadEntries() // Refresh the list
-      } else {
-        setMessage({ type: "error", text: data.error || "Failed to generate code" })
+      const genData = await genResponse.json()
+      if (!genData.success) {
+        setMessage({ type: "error", text: genData.error || "Failed to generate code" })
+        return
       }
+
+      // Automatically send the new code via email
+      const emailResponse = await fetch(`/api/admin/whitelist/${entry.id}/send-code-email`, {
+        method: "POST",
+        headers: {
+          "X-Admin-Secret": adminSecret,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ code: genData.code }),
+      })
+      const emailData = await emailResponse.json()
+
+      if (emailData.success) {
+        setMessage({ type: "success", text: `New code ${genData.code} generated and emailed to ${entry.email}` })
+      } else {
+        setMessage({ type: "success", text: `Code generated: ${genData.code} (email failed: ${emailData.error})` })
+      }
+      loadEntries()
     } catch {
       setMessage({ type: "error", text: "Failed to generate code" })
     } finally {
       setGenerating(false)
+      setSendingEmail(false)
     }
   }
 
@@ -133,7 +152,7 @@ export default function AdminPage() {
     setSendingEmail(true)
     setMessage(null)
     try {
-      const response = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}/send-code-email`, {
+      const response = await fetch(`/api/admin/whitelist/${entry.id}/send-code-email`, {
         method: "POST",
         headers: {
           "X-Admin-Secret": adminSecret,
@@ -160,7 +179,7 @@ export default function AdminPage() {
     setMessage(null)
     try {
       // First generate the code
-      const genResponse = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}/generate-code`, {
+      const genResponse = await fetch(`/api/admin/whitelist/${entry.id}/generate-code`, {
         method: "POST",
         headers: {
           "X-Admin-Secret": adminSecret,
@@ -176,7 +195,7 @@ export default function AdminPage() {
       }
 
       // Then send the email with optional custom message
-      const emailResponse = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}/send-code-email`, {
+      const emailResponse = await fetch(`/api/admin/whitelist/${entry.id}/send-code-email`, {
         method: "POST",
         headers: {
           "X-Admin-Secret": adminSecret,
@@ -207,7 +226,7 @@ export default function AdminPage() {
     setDeleting(true)
     setMessage(null)
     try {
-      const response = await fetch(`https://api.zsend.xyz/admin/whitelist/${entry.id}`, {
+      const response = await fetch(`/api/admin/whitelist/${entry.id}`, {
         method: "DELETE",
         headers: {
           "X-Admin-Secret": adminSecret,

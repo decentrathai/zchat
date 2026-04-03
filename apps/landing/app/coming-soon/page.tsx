@@ -23,7 +23,7 @@ export default function ComingSoonPage() {
           </h1>
 
           <p className="mb-8 text-pretty text-xl leading-relaxed text-gray-300 lg:text-2xl">
-            We're in the final stage of internal testing. Public launch is planned for Q1 2026 on web and mobile.
+            We're in the final stage of internal testing. Public launch is planned for 2026 on Android, with iOS to follow.
           </p>
 
           <div className="mx-auto mb-12 max-w-xl space-y-4 rounded-2xl border border-cyan-500/20 bg-gradient-to-br from-cyan-500/5 to-magenta-500/5 p-8 text-left backdrop-blur-sm">
@@ -39,7 +39,7 @@ export default function ComingSoonPage() {
             </div>
             <div className="flex items-start gap-3">
               <div className="mt-1 h-2 w-2 rounded-full bg-cyan-500" />
-              <p className="leading-relaxed text-gray-300">Web, iOS, and Android apps launching soon</p>
+              <p className="leading-relaxed text-gray-300">Android app available now. iOS coming soon.</p>
             </div>
           </div>
 

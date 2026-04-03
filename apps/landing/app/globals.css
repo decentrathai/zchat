@@ -4,83 +4,101 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  /* <CHANGE> Cyberpunk theme with deep dark backgrounds and neon accents */
-  --background: oklch(0.06 0.01 265);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.12 0.02 265);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.12 0.02 265);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.7 0.2 195);
-  --primary-foreground: oklch(0.06 0.01 265);
-  --secondary: oklch(0.25 0.03 265);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.2 0.02 265);
-  --muted-foreground: oklch(0.65 0.01 265);
-  --accent: oklch(0.7 0.2 195);
-  --accent-foreground: oklch(0.06 0.01 265);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.25 0.03 265);
-  --input: oklch(0.25 0.03 265);
-  --ring: oklch(0.7 0.2 195);
-  --chart-1: oklch(0.7 0.2 195);
-  --chart-2: oklch(0.65 0.25 320);
-  --chart-3: oklch(0.6 0.15 220);
-  --chart-4: oklch(0.7 0.18 280);
-  --chart-5: oklch(0.68 0.22 340);
-  --radius: 0.75rem;
-  --sidebar: oklch(0.12 0.02 265);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.7 0.2 195);
-  --sidebar-primary-foreground: oklch(0.06 0.01 265);
-  --sidebar-accent: oklch(0.25 0.03 265);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.25 0.03 265);
-  --sidebar-ring: oklch(0.7 0.2 195);
-  /* <CHANGE> Custom neon color tokens for cyberpunk aesthetic */
-  --neon-cyan: oklch(0.7 0.2 195);
-  --neon-magenta: oklch(0.65 0.25 320);
+  --bg-base: #080B12;
+  --bg-surface: #0F1420;
+  --bg-elevated: #161B2B;
+  --bg-input: #1A2035;
+  --accent-primary: #00E5FF;
+  --accent-primary-dim: #00A3B4;
+  --accent-primary-glow: rgba(0, 229, 255, 0.2);
+  --accent-secondary: #FF2D78;
+  --accent-secondary-dim: #CC2460;
+  --accent-success: #00FF88;
+  --color-warning: #FFB800;
+  --color-danger: #FF3344;
+  --text-primary: #E8EDF5;
+  --text-secondary: #7A849B;
+  --text-tertiary: #464F66;
+  --border-default: rgba(255, 255, 255, 0.06);
+  --border-active: rgba(0, 229, 255, 0.27);
+  --radius-card: 8px;
+  --radius-button: 8px;
+  --radius-modal: 12px;
+
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-surface);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: var(--bg-base);
+  --secondary: var(--bg-elevated);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--bg-elevated);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--color-danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--border-default);
+  --input: var(--bg-input);
+  --ring: var(--accent-primary);
+  --chart-1: var(--accent-primary);
+  --chart-2: var(--accent-success);
+  --chart-3: var(--color-warning);
+  --chart-4: var(--accent-secondary);
+  --chart-5: var(--accent-primary-dim);
+  --radius: 0.5rem;
+  --sidebar: var(--bg-surface);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-primary);
+  --sidebar-primary-foreground: var(--bg-base);
+  --sidebar-accent: var(--bg-elevated);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--accent-primary);
 }
 
 .dark {
-  --background: oklch(0.06 0.01 265);
-  --foreground: oklch(0.98 0 0);
-  --card: oklch(0.12 0.02 265);
-  --card-foreground: oklch(0.98 0 0);
-  --popover: oklch(0.12 0.02 265);
-  --popover-foreground: oklch(0.98 0 0);
-  --primary: oklch(0.7 0.2 195);
-  --primary-foreground: oklch(0.06 0.01 265);
-  --secondary: oklch(0.25 0.03 265);
-  --secondary-foreground: oklch(0.98 0 0);
-  --muted: oklch(0.2 0.02 265);
-  --muted-foreground: oklch(0.65 0.01 265);
-  --accent: oklch(0.7 0.2 195);
-  --accent-foreground: oklch(0.06 0.01 265);
-  --destructive: oklch(0.577 0.245 27.325);
-  --destructive-foreground: oklch(0.98 0 0);
-  --border: oklch(0.25 0.03 265);
-  --input: oklch(0.25 0.03 265);
-  --ring: oklch(0.7 0.2 195);
-  --chart-1: oklch(0.7 0.2 195);
-  --chart-2: oklch(0.65 0.25 320);
-  --chart-3: oklch(0.6 0.15 220);
-  --chart-4: oklch(0.7 0.18 280);
-  --chart-5: oklch(0.68 0.22 340);
-  --sidebar: oklch(0.12 0.02 265);
-  --sidebar-foreground: oklch(0.98 0 0);
-  --sidebar-primary: oklch(0.7 0.2 195);
-  --sidebar-primary-foreground: oklch(0.06 0.01 265);
-  --sidebar-accent: oklch(0.25 0.03 265);
-  --sidebar-accent-foreground: oklch(0.98 0 0);
-  --sidebar-border: oklch(0.25 0.03 265);
-  --sidebar-ring: oklch(0.7 0.2 195);
+  --background: var(--bg-base);
+  --foreground: var(--text-primary);
+  --card: var(--bg-surface);
+  --card-foreground: var(--text-primary);
+  --popover: var(--bg-surface);
+  --popover-foreground: var(--text-primary);
+  --primary: var(--accent-primary);
+  --primary-foreground: var(--bg-base);
+  --secondary: var(--bg-elevated);
+  --secondary-foreground: var(--text-primary);
+  --muted: var(--bg-elevated);
+  --muted-foreground: var(--text-secondary);
+  --accent: var(--bg-elevated);
+  --accent-foreground: var(--text-primary);
+  --destructive: var(--color-danger);
+  --destructive-foreground: #ffffff;
+  --border: var(--border-default);
+  --input: var(--bg-input);
+  --ring: var(--accent-primary);
+  --chart-1: var(--accent-primary);
+  --chart-2: var(--accent-success);
+  --chart-3: var(--color-warning);
+  --chart-4: var(--accent-secondary);
+  --chart-5: var(--accent-primary-dim);
+  --sidebar: var(--bg-surface);
+  --sidebar-foreground: var(--text-primary);
+  --sidebar-primary: var(--accent-primary);
+  --sidebar-primary-foreground: var(--bg-base);
+  --sidebar-accent: var(--bg-elevated);
+  --sidebar-accent-foreground: var(--text-primary);
+  --sidebar-border: var(--border-default);
+  --sidebar-ring: var(--accent-primary);
 }
 
 @theme inline {
   --font-sans: "Geist", "Geist Fallback";
-  --font-mono: "Geist Mono", "Geist Mono Fallback";
+  --font-mono: "JetBrains Mono", "Geist Mono", "Geist Mono Fallback";
+  --font-display: "Rajdhani", "Geist", sans-serif;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -117,11 +135,44 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
-  /* <CHANGE> Adding custom neon colors to Tailwind theme */
-  --color-cyan-500: oklch(0.7 0.2 195);
-  --color-cyan-400: oklch(0.75 0.2 195);
-  --color-magenta-500: oklch(0.65 0.25 320);
-  --color-magenta-400: oklch(0.7 0.25 320);
+  --color-cyan-500: #00E5FF;
+  --color-cyan-400: #33EBFF;
+  --color-magenta-500: #FF2D78;
+  --color-magenta-400: #FF5793;
+}
+
+/* Animations */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.7s ease-out forwards;
+  opacity: 0;
+}
+
+.animate-fade-in-up-1 { animation-delay: 0ms; }
+.animate-fade-in-up-2 { animation-delay: 120ms; }
+.animate-fade-in-up-3 { animation-delay: 240ms; }
+.animate-fade-in-up-4 { animation-delay: 360ms; }
+.animate-fade-in-up-5 { animation-delay: 480ms; }
+
+/* Scroll reveal */
+.reveal {
+  opacity: 0;
+  transform: translateY(20px);
+  transition: opacity 0.6s ease, transform 0.6s ease;
+}
+.reveal.visible {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 @layer base {
