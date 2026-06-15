@@ -47,3 +47,75 @@ model ContactSubmission {
   read      Boolean  @default(false)
   readAt    DateTime?
 }
+
+// ============================================================================
+// AI / Venice integration — proxy + credit ledger
+// ============================================================================
+// Identity: opaque userId issued on first /ai/auth/register; tokenHash binds
+// the userId to a per-device Bearer token. Wallet signature binding is a v2.
+// Money: balanceMicroUsd stored as BigInt micro-USD (1 USD = 1_000_000 µUSD).
+// Top-ups: user sends ZEC to a memo-tagged address; watcher credits balance.
+
+model AiAccount {
+  userId           String   @id                                   // cuid
+  tokenHash        String   @unique                               // sha256(bearer token)
+  balanceMicroUsd  BigInt   @default(0)
+  freeTrialGranted Boolean  @default(false)                       // $0.20 free credits already spent or not
+  pubkey           String?  @unique                               // sha256 of wallet UA, binds account to wallet identity
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+  deposits         AiTopupDeposit[]
+  usage            AiUsageEvent[]
+  // tokenHash @unique already creates an index; pubkey @unique likewise. No separate @@index needed.
+}
+
+model AiTopupDeposit {
+  id               String    @id @default(cuid())
+  userId           String
+  account          AiAccount @relation(fields: [userId], references: [userId])
+  zecTxId          String    @unique
+  zatoshi          BigInt
+  zecUsdPriceAtCredit Decimal @db.Decimal(20, 8)                  // ZEC/USD price snapshot
+  microUsdCredited BigInt
+  status           String                                          // pending|confirmed|credited|rejected
+  createdAt        DateTime  @default(now())
+  creditedAt       DateTime?
+
+  @@index([userId])
+  @@index([status])
+}
+
+model AiUsageEvent {
+  id                  String    @id @default(cuid())
+  userId              String
+  account             AiAccount @relation(fields: [userId], references: [userId])
+  ts                  DateTime  @default(now())
+  model               String
+  endpoint            String                                      // chat|image|embedding
+  inputTokens         Int       @default(0)
+  outputTokens        Int       @default(0)
+  imageCount          Int       @default(0)                       // for image endpoint
+  veniceCostMicroUsd  BigInt                                      // raw Venice cost
+  chargedMicroUsd     BigInt                                      // venice * 1.15 rounded up
+  marginMicroUsd      BigInt                                      // chargedMicroUsd - veniceCostMicroUsd
+  success             Boolean
+  veniceRequestId     String?
+  errorCode           String?
+
+  @@index([userId, ts(sort: Desc)])
+  @@index([ts(sort: Desc)])
+}
+
+model AiModelPricing {
+  modelId         String   @id                                    // venice model id
+  displayName     String
+  inputPer1mUsd   Decimal  @db.Decimal(10, 6)                     // Venice cost per 1M input tokens (USD)
+  outputPer1mUsd  Decimal  @db.Decimal(10, 6)
+  imagePerCallUsd Decimal? @db.Decimal(10, 6)                     // null for non-image models
+  isFreeTier      Boolean  @default(false)                        // available on $0.20 trial
+  contextTokens   Int?
+  privacy         String                                          // private|anonymized
+  supportsTools   Boolean  @default(true)
+  supportsVision  Boolean  @default(false)
+  updatedAt       DateTime @updatedAt
+}

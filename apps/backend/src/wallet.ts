@@ -271,6 +271,53 @@ interface WalletMessage {
   amount_zatoshis?: number;
 }
 
+/**
+ * Verify a claimed top-up deposit against the on-chain wallet view.
+ *
+ * Called from `/api/v1/ai/admin/credit-from-deposit` to make sure the requester actually
+ * delivered ZEC to our shielded top-up address — defends against an attacker who has
+ * obtained ADMIN_SECRET from crediting fake txids.
+ *
+ * The watcher's wallet DB (WALLET_DB_PATH env) is the source of truth: it contains every
+ * incoming note tagged with `ai-topup:<userId>`. The check:
+ *   1. The txid must exist in `zchat-wallet messages`.
+ *   2. The memo must equal `ai-topup:<expectedUserId>`.
+ *   3. The note must be incoming (incoming === true).
+ *   4. The value must match the claimed zatoshi (±0 — exact).
+ *
+ * Returns null on success, or a string describing the mismatch on failure.
+ */
+export async function verifyDepositOnChain(args: {
+  walletDbPath: string;
+  zecTxId: string;
+  expectedUserId: string;
+  expectedZatoshi: bigint;
+}): Promise<string | null> {
+  const { walletDbPath, zecTxId, expectedUserId, expectedZatoshi } = args;
+  let messages: WalletMessage[];
+  try {
+    const result = await getMessages(walletDbPath);
+    messages = result.messages;
+  } catch (err) {
+    return `wallet messages CLI failed: ${getErrorMessage(err)}`;
+  }
+  const note = messages.find((m) => m.txid === zecTxId);
+  if (!note) return `txid ${zecTxId.slice(0, 16)}… not found in watcher wallet`;
+  // Walletmessages typing has memo + amount_zatoshis as optional. Accept the shape the
+  // wallet CLI actually returns (incoming:true + value_zatoshis); fall back to legacy fields.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const anyNote = note as any;
+  // Fail closed: credit ONLY a definitively-incoming note. `=== false` would let a note with a
+  // missing/undefined `incoming` field through and credit a non-deposit (e.g. change output).
+  if (anyNote.incoming !== true) return 'note is not a confirmed incoming deposit';
+  const memo = (note.memo ?? '').trim();
+  const expectedMemo = `ai-topup:${expectedUserId}`;
+  if (memo !== expectedMemo) return `memo mismatch: got "${memo.slice(0, 32)}", expected "${expectedMemo}"`;
+  const value = BigInt(anyNote.value_zatoshis ?? note.amount_zatoshis ?? 0);
+  if (value !== expectedZatoshi) return `zatoshi mismatch: got ${value}, expected ${expectedZatoshi}`;
+  return null;
+}
+
 export async function getMessages(walletDbPath: string, sinceHeight?: number): Promise<{ messages: WalletMessage[] }> {
   try {
     const args = [

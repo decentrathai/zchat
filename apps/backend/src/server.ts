@@ -46,6 +46,16 @@ function getPrismaErrorCode(error: unknown): string | undefined {
   return undefined;
 }
 
+// Detects the AiAccount balance CHECK-constraint violation used by the credit-reservation
+// concurrency guard. A CHECK violation on a typed `.update()` surfaces as
+// PrismaClientUnknownRequestError with `code === undefined` (so getPrismaErrorCode never sees
+// 'P2010' — that's the RAW-query code), but the engine embeds the Postgres SQLSTATE 23514 and the
+// constraint name in the message. Match on those stable tokens rather than a loose substring.
+function isBalanceCheckViolation(error: unknown): boolean {
+  const s = String(error);
+  return /\b23514\b/.test(s) || s.includes('AiAccount_balanceMicroUsd_nonneg_check');
+}
+
 // Type predicate for JWT payload validation (Boris Cherny best practice)
 function isValidJwtPayload(obj: unknown): obj is { userId: number; username: string } {
   return (
@@ -57,7 +67,7 @@ function isValidJwtPayload(obj: unknown): obj is { userId: number; username: str
     typeof (obj as Record<string, unknown>).username === 'string'
   );
 }
-import { syncWallet, sendTransaction, getMessages, getUserWalletDbPath, ensureWalletDbDir, getPrimaryAddress, getBalance, buildTransaction } from './wallet';
+import { syncWallet, sendTransaction, getMessages, getUserWalletDbPath, ensureWalletDbDir, getPrimaryAddress, getBalance, buildTransaction, verifyDepositOnChain } from './wallet';
 
 // JWT Secret - REQUIRED in production
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -201,6 +211,15 @@ declare module 'fastify' {
 const server = Fastify({
   logger: true,
   bodyLimit: 1048576, // 1MB max body size (MEDIUM #B2)
+  // SECURITY (HIGH #B1-proxy): the API is reachable only through the Cloudflare tunnel,
+  // which connects to the origin from the loopback address. Without trustProxy, request.ip
+  // resolves to 127.0.0.1 for EVERY external request, collapsing all internet traffic into a
+  // single rate-limit bucket (any one client trips the global 100/min limiter for everyone =
+  // DoS) and making the per-IP register limiter a global cap. Trusting the loopback hop lets
+  // Fastify derive the real client IP from X-Forwarded-For so the limiters key per-client.
+  // NOTE: cloudflared must be configured to forward X-Forwarded-For (or the limiters should
+  // additionally consult the Cf-Connecting-Ip header) for this to reflect the true client.
+  trustProxy: '127.0.0.1',
 });
 
 // Custom JSON parser that handles empty bodies (for DELETE requests)
@@ -249,13 +268,21 @@ server.register(cors, {
 });
 
 // Rate limiting to prevent abuse (HIGH #B1)
-server.register(rateLimit, {
-  max: 100, // Max 100 requests per window
-  timeWindow: '1 minute',
-  // Stricter limits for auth endpoints
-  keyGenerator: (request) => {
-    return request.ip || 'unknown';
-  },
+// Note: server.register returns a promise. Without await, plugin registration order
+// is enforced by Fastify's internal lifecycle (avvio), so this still loads before
+// .listen(). Logging confirms when the plugin is ready.
+Promise.resolve(
+  server.register(rateLimit, {
+    max: 100, // Max 100 requests per window
+    timeWindow: '1 minute',
+    keyGenerator: (request) => {
+      return request.ip || 'unknown';
+    },
+  })
+).then(() => {
+  server.log.info('rate-limit plugin registered');
+}).catch((err: unknown) => {
+  server.log.error({ err: String(err) }, 'rate-limit plugin FAILED to register');
 });
 
 // Auth helper middleware - verifies JWT and attaches user to request
@@ -1632,6 +1659,1224 @@ server.post<{ Params: { id: string } }>('/admin/contacts/:id/read', async (reque
   }
 });
 
+// =====================
+// AI / VENICE ROUTES (Phase 1)
+// =====================
+//
+// Architecture:
+//   Android app → POST /api/v1/ai/auth/register (no body) → receives bearer token
+//   App stores token in EncryptedSharedPreferences; uses for all /ai/* calls
+//   Backend proxies Venice API, debits user credit ledger on success
+//
+// Money model (BigInt micro-USD, 1 USD = 1_000_000 µUSD):
+//   Venice raw cost (per request) → multiply by markup → debit user balance
+//   Free trial: $0.20 (= 200_000 µUSD) on cheap models only
+//
+// Identity:
+//   userId = cuid (random, server-issued)
+//   tokenHash = sha256(bearer) stored; raw bearer never persisted
+//   v2 will add wallet-signature binding for cross-device recovery
+//
+// Refunds: see /ai/admin/refund — manual only, per ToS click-through
+
+const VENICE_BASE_URL = 'https://api.venice.ai/api/v1';
+const VENICE_ADMIN_KEY = process.env.VENICE_ADMIN_KEY || '';
+const VENICE_MARKUP = 1.15; // 15% margin on top of raw Venice cost
+const FREE_TRIAL_MICRO_USD = 200_000n; // $0.20
+
+// Cheap models eligible for $0.20 free trial — explicit whitelist
+const FREE_TIER_MODELS = new Set([
+  'venice-uncensored',
+  'venice-uncensored-1-2',
+  'qwen3-coder-480b-a35b-instruct-turbo',
+  'qwen3-235b-a22b-instruct-2507',
+  'llama-3.3-70b',
+]);
+
+function sha256Hex(s: string): string {
+  return crypto.createHash('sha256').update(s).digest('hex');
+}
+
+function microUsd(usd: number): bigint {
+  // Round UP to nearest µUSD so we never under-charge
+  return BigInt(Math.ceil(usd * 1_000_000));
+}
+
+async function authenticateAiUser(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<{ userId: string } | null> {
+  const authHeader = request.headers['authorization'];
+  if (typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
+    reply.code(401);
+    reply.send({ error: 'Missing bearer token' });
+    return null;
+  }
+  const token = authHeader.slice('Bearer '.length).trim();
+  if (!token) {
+    reply.code(401);
+    reply.send({ error: 'Empty bearer token' });
+    return null;
+  }
+  const account = await prisma.aiAccount.findUnique({ where: { tokenHash: sha256Hex(token) } });
+  if (!account) {
+    reply.code(401);
+    reply.send({ error: 'Invalid token' });
+    return null;
+  }
+  return { userId: account.userId };
+}
+
+// POST /api/v1/ai/auth/register — issue a per-device bearer token + grant $0.20 free credits
+//
+// Optional body: { walletPubkey: <hex sha256 of wallet UA> }
+//   - If walletPubkey is provided AND an AiAccount already exists for that pubkey, we re-mint
+//     a new bearer token bound to the SAME userId and balance. This survives reinstalls and
+//     prevents the $0.20-per-reinstall exploit.
+//   - If walletPubkey is provided but no account exists, create one with the pubkey stored.
+//   - If walletPubkey is absent, fall back to the legacy unbound-account flow (no rebinding).
+//
+// Free-trial behavior: granted exactly once per AiAccount (i.e. once per wallet when bound).
+// On re-mint, the existing balance is returned unchanged — no new $0.20.
+type RegisterBody = { walletPubkey?: string };
+const PUBKEY_RE = /^[0-9a-fA-F]{64}$/;
+
+// Explicit per-IP register rate limiter. Caps at 6 successful mints per hour per IP
+// (each mint costs $0.20 of Venice budget). Failing requests still consume a slot so
+// a botnet can't probe-then-retry. The state is in-memory; production behind a reverse
+// proxy should look at X-Forwarded-For (currently NOT trusted — see trustProxy below).
+const REGISTER_MAX_PER_WINDOW = 6;
+const REGISTER_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const registerRateState = new Map<string, { count: number; resetAt: number }>();
+function checkRegisterRate(ip: string): { allowed: boolean; remaining: number; resetMs: number } {
+  const now = Date.now();
+  const cur = registerRateState.get(ip);
+  if (!cur || now >= cur.resetAt) {
+    registerRateState.set(ip, { count: 1, resetAt: now + REGISTER_WINDOW_MS });
+    return { allowed: true, remaining: REGISTER_MAX_PER_WINDOW - 1, resetMs: REGISTER_WINDOW_MS };
+  }
+  if (cur.count >= REGISTER_MAX_PER_WINDOW) {
+    return { allowed: false, remaining: 0, resetMs: cur.resetAt - now };
+  }
+  cur.count += 1;
+  return { allowed: true, remaining: REGISTER_MAX_PER_WINDOW - cur.count, resetMs: cur.resetAt - now };
+}
+// Test seam — Vitest can reset state between cases by calling this.
+export function __resetRegisterRateLimit(): void {
+  registerRateState.clear();
+  rebindRateState.clear();
+}
+
+// Per-pubkey rebind cooldown. Each successful rebind (or attempt) starts a 6h window
+// during which the same pubkey can't rebind again. Narrows the TOFU takeover surface from
+// "anytime" to "once per 6h" until full proof-of-possession lands.
+const REBIND_WINDOW_MS = 6 * 60 * 60 * 1000;
+const rebindRateState = new Map<string, { resetAt: number }>();
+function checkRebindRate(pubkey: string): { allowed: boolean; resetMs: number } {
+  const now = Date.now();
+  const cur = rebindRateState.get(pubkey);
+  if (!cur || now >= cur.resetAt) {
+    rebindRateState.set(pubkey, { resetAt: now + REBIND_WINDOW_MS });
+    return { allowed: true, resetMs: REBIND_WINDOW_MS };
+  }
+  return { allowed: false, resetMs: cur.resetAt - now };
+}
+
+server.post('/api/v1/ai/auth/register', async (request, reply) => {
+  const ip = request.ip || 'unknown';
+  const gate = checkRegisterRate(ip);
+  reply.header('X-RateLimit-Limit', REGISTER_MAX_PER_WINDOW.toString());
+  reply.header('X-RateLimit-Remaining', gate.remaining.toString());
+  reply.header('X-RateLimit-Reset', Math.ceil(gate.resetMs / 1000).toString());
+  if (!gate.allowed) {
+    reply.code(429);
+    return { error: 'Too many register attempts. Try again later.' };
+  }
+  const body = (request.body ?? {}) as RegisterBody;
+  // Accept upper or lowercase hex but persist canonical lowercase so the @unique
+  // constraint can't be tricked into creating two accounts for the same wallet.
+  const rawPubkey = typeof body.walletPubkey === 'string' ? body.walletPubkey : null;
+  const walletPubkey = rawPubkey && PUBKEY_RE.test(rawPubkey) ? rawPubkey.toLowerCase() : null;
+
+  if (walletPubkey) {
+    // Defense against the TOFU rebind attack (P0-2): the same pubkey may rebind at most
+    // once every 6 hours. Anyone who's seen the victim's UA can still in principle rebind,
+    // but their window is narrowed from "anytime" to "once per 6h" — and EVERY rebind
+    // is logged so an admin can spot anomalies. Full proof-of-possession (Ed25519 challenge
+    // signed by a wallet-derived key) requires Android crypto work and ships in P0-2b.
+    const rebindCheck = checkRebindRate(walletPubkey);
+    if (!rebindCheck.allowed) {
+      reply.code(429);
+      return {
+        error: 'Rebind cooldown: this wallet has rebound recently. Try again later.',
+        retryAfterSeconds: Math.ceil(rebindCheck.resetMs / 1000),
+      };
+    }
+    const existing = await prisma.aiAccount.findUnique({ where: { pubkey: walletPubkey } });
+    if (existing) {
+      server.log.warn(
+        {
+          userId: existing.userId,
+          pubkeyPrefix: walletPubkey.slice(0, 12),
+          requestIp: ip,
+          balanceMicroUsd: existing.balanceMicroUsd.toString(),
+        },
+        'pubkey rebind issued — old bearer invalidated',
+      );
+      // Rotate token: a fresh bearer is issued, the old one is invalidated by replacing tokenHash.
+      const tokenRaw = crypto.randomBytes(32).toString('base64url');
+      const updated = await prisma.aiAccount.update({
+        where: { userId: existing.userId },
+        data: { tokenHash: sha256Hex(tokenRaw) },
+      });
+      // SECURITY: do NOT echo the balance here — the pubkey is derived from the (publicly shared)
+      // unified address, so until proof-of-possession (P0-2b: a challenge signed by a wallet-derived
+      // key) gates this path, the response must not be a balance oracle. The legit client reads its
+      // balance via GET /ai/balance with the new token. NOTE: this path still allows an address-knower
+      // to rebind (rate-limited to once/6h + logged); fully closing it requires the PoP challenge.
+      return {
+        userId: updated.userId,
+        token: tokenRaw,
+        freeTrialCreditUsd: 0,
+        rebound: true,
+      };
+    }
+  }
+
+  const tokenRaw = crypto.randomBytes(32).toString('base64url');
+  const userId = crypto.randomBytes(16).toString('hex');
+  await prisma.aiAccount.create({
+    data: {
+      userId,
+      tokenHash: sha256Hex(tokenRaw),
+      balanceMicroUsd: FREE_TRIAL_MICRO_USD,
+      freeTrialGranted: true,
+      pubkey: walletPubkey,
+    },
+  });
+  return {
+    userId,
+    token: tokenRaw,
+    freeTrialCreditUsd: 0.2,
+    balanceMicroUsd: FREE_TRIAL_MICRO_USD.toString(),
+    rebound: false,
+  };
+});
+
+// GET /api/v1/ai/balance — user's current credit + free-trial status
+server.get('/api/v1/ai/balance', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  const account = await prisma.aiAccount.findUnique({ where: { userId: auth.userId } });
+  if (!account) {
+    reply.code(404);
+    return { error: 'Account not found' };
+  }
+  return {
+    userId: account.userId,
+    balanceMicroUsd: account.balanceMicroUsd.toString(),
+    balanceUsd: Number(account.balanceMicroUsd) / 1_000_000,
+    freeTrialAvailable: !account.freeTrialGranted,
+    freeTrialUsd: 0.2,
+  };
+});
+
+// GET /api/v1/ai/models — Venice catalog augmented with our marked-up pricing
+// Each model in the response gets a `zchat_pricing` field containing the price
+// the user actually pays (Venice cost × VENICE_MARKUP). Venice's own fields are
+// preserved so client display logic that already understands Venice's shape
+// keeps working.
+//
+// Cached server-side for 24h to avoid hammering Venice on every tab open.
+const MODELS_CACHE_TTL_MS = 24 * 3600 * 1000;
+
+// Venice serves TEXT models at /models and IMAGE models at /models?type=image. Each carries
+// native pricing in model_spec.pricing. We load BOTH, normalize the prices, and cache:
+//   - `pricing`: modelId → raw Venice cost, so ANY catalog model is chargeable even without a
+//                hand-seeded AiModelPricing row (root fix for "model not available / not configured").
+//   - `modelsJson`: the merged catalog augmented with zchat_pricing (marked up) + zchat_model_type,
+//                   so the client can list AND filter text vs image models.
+type CatalogPricing = {
+  inputPer1mUsd: number; // raw Venice $/1M input tokens (text models)
+  outputPer1mUsd: number; // raw Venice $/1M output tokens (text models)
+  imagePerCallUsd: number | null; // raw Venice $/image (image models)
+  isImage: boolean;
+};
+let veniceCatalogCache: { pricing: Map<string, CatalogPricing>; modelsJson: string } | null = null;
+let veniceCatalogAt = 0;
+
+// Extract a per-image USD cost from Venice's image pricing, which is either
+// { generation: { usd } } or resolution-tiered { resolutions: { '1K': { usd }, ... } }.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function veniceImagePerCallUsd(pricing: any): number | null {
+  if (!pricing || typeof pricing !== 'object') return null;
+  if (typeof pricing.generation?.usd === 'number') return pricing.generation.usd;
+  const res = pricing.resolutions;
+  if (res && typeof res === 'object') {
+    if (typeof res['1K']?.usd === 'number') return res['1K'].usd; // app sends ~1024px
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const vals = Object.values(res).map((r: any) => r?.usd).filter((v): v is number => typeof v === 'number');
+    if (vals.length) return Math.min(...vals);
+  }
+  return null;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function fetchVeniceModelList(url: string): Promise<Array<Record<string, any>>> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  if (VENICE_ADMIN_KEY) headers.Authorization = `Bearer ${VENICE_ADMIN_KEY}`;
+  const resp = await fetch(url, { headers, signal: AbortSignal.timeout(10_000) });
+  if (!resp.ok) throw new Error(`Venice ${url} returned ${resp.status}`);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parsed = JSON.parse(await resp.text()) as { data?: Array<Record<string, any>> };
+  return Array.isArray(parsed?.data) ? parsed.data : [];
+}
+
+async function loadVeniceCatalog(): Promise<{ pricing: Map<string, CatalogPricing>; modelsJson: string }> {
+  const now = Date.now();
+  if (veniceCatalogCache && now - veniceCatalogAt < MODELS_CACHE_TTL_MS) return veniceCatalogCache;
+  const [textRaw, imageRaw] = await Promise.all([
+    fetchVeniceModelList(`${VENICE_BASE_URL}/models`),
+    fetchVeniceModelList(`${VENICE_BASE_URL}/models?type=image`).catch(() => []), // image is best-effort
+  ]);
+  const dbRows = await prisma.aiModelPricing.findMany();
+  const dbById = new Map(dbRows.map((r) => [r.modelId, r]));
+  const pricing = new Map<string, CatalogPricing>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const augment = (m: Record<string, any>, isImage: boolean) => {
+    const id = typeof m.id === 'string' ? m.id : null;
+    if (!id) return;
+    const vp = m.model_spec?.pricing;
+    const cat: CatalogPricing = isImage
+      ? { inputPer1mUsd: 0, outputPer1mUsd: 0, imagePerCallUsd: veniceImagePerCallUsd(vp), isImage: true }
+      : {
+          inputPer1mUsd: Number(vp?.input?.usd ?? 0),
+          outputPer1mUsd: Number(vp?.output?.usd ?? 0),
+          imagePerCallUsd: null,
+          isImage: false,
+        };
+    pricing.set(id, cat);
+    m.zchat_model_type = isImage ? 'image' : 'text';
+    // Surface the uncensored signal so the client can badge models. Venice marks its most permissive
+    // models with the `most_uncensored` trait (e.g. lustify-v7/v8 for images, venice-uncensored for
+    // text). This is the model that actually produces explicit output once safe_mode is off.
+    const traits: unknown = m.model_spec?.traits;
+    m.zchat_uncensored = Array.isArray(traits) && traits.some((t) => String(t).toLowerCase().includes('uncensored'));
+    // Display pricing: prefer a hand-seeded row (authoritative), else the live catalog. Marked up.
+    // Only attach zchat_pricing when a REAL price exists, so the client can hide/disable any model
+    // Venice lists without usable pricing (it would otherwise 400 at the charge guard anyway).
+    const db = dbById.get(id);
+    const hasRealPrice = db != null ||
+      (isImage ? cat.imagePerCallUsd !== null : (cat.inputPer1mUsd > 0 || cat.outputPer1mUsd > 0));
+    if (!hasRealPrice) return;
+    const rawIn = db ? Number(db.inputPer1mUsd) : cat.inputPer1mUsd;
+    const rawOut = db ? Number(db.outputPer1mUsd) : cat.outputPer1mUsd;
+    const rawImg = db
+      ? (db.imagePerCallUsd !== null ? Number(db.imagePerCallUsd) : cat.imagePerCallUsd)
+      : cat.imagePerCallUsd;
+    m.zchat_pricing = {
+      inputPer1mUsd: rawIn * VENICE_MARKUP,
+      outputPer1mUsd: rawOut * VENICE_MARKUP,
+      imagePerCallUsd: rawImg !== null ? rawImg * VENICE_MARKUP : null,
+      isFreeTier: db?.isFreeTier ?? false,
+      markup: VENICE_MARKUP,
+    };
+  };
+  for (const m of textRaw) augment(m, false);
+  for (const m of imageRaw) augment(m, true);
+  const result = { pricing, modelsJson: JSON.stringify({ data: [...textRaw, ...imageRaw] }) };
+  if (pricing.size > 0) {
+    veniceCatalogCache = result;
+    veniceCatalogAt = now;
+  }
+  return veniceCatalogCache ?? result;
+}
+
+// Effective pricing for a charge: hand-seeded AiModelPricing row (authoritative — sets isFreeTier
+// and lets us override Venice), else the live Venice catalog so any model is usable by a paid user.
+async function resolveModelPricing(modelId: string): Promise<{
+  inputPer1mUsd: number;
+  outputPer1mUsd: number;
+  imagePerCallUsd: number | null;
+  isFreeTier: boolean;
+} | null> {
+  const row = await prisma.aiModelPricing.findUnique({ where: { modelId } });
+  if (row) {
+    return {
+      inputPer1mUsd: Number(row.inputPer1mUsd),
+      outputPer1mUsd: Number(row.outputPer1mUsd),
+      imagePerCallUsd: row.imagePerCallUsd !== null ? Number(row.imagePerCallUsd) : null,
+      isFreeTier: row.isFreeTier,
+    };
+  }
+  const cat = await loadVeniceCatalog().then((c) => c.pricing.get(modelId)).catch(() => null);
+  if (!cat) return null;
+  return {
+    inputPer1mUsd: cat.inputPer1mUsd,
+    outputPer1mUsd: cat.outputPer1mUsd,
+    imagePerCallUsd: cat.imagePerCallUsd,
+    isFreeTier: false, // catalog models aren't free-tier unless explicitly seeded
+  };
+}
+
+server.get('/api/v1/ai/models', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  try {
+    const { modelsJson } = await loadVeniceCatalog();
+    reply.header('content-type', 'application/json; charset=utf-8');
+    return modelsJson;
+  } catch (err) {
+    server.log.error({ err: getErrorMessage(err) }, 'Failed to fetch Venice catalog');
+    reply.code(502);
+    return { error: 'Upstream model fetch failed' };
+  }
+});
+
+// Admin-only: flush the /models cache (use after AiModelPricing rows change)
+server.post('/api/v1/ai/admin/flush-models-cache', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+  veniceCatalogCache = null;
+  veniceCatalogAt = 0;
+  return { ok: true };
+});
+
+// GET /api/v1/ai/admin/venice-balance — Venice account health for ops monitoring.
+// Calls Venice's rate-limits endpoint with our master key and surfaces the USD balance,
+// per-epoch consumption cap, current period usage, and trailing 7d usage. Cron / external
+// monitoring should hit this and alert when balanceUsd falls below a threshold so we top
+// Venice up before users start seeing 402s.
+server.get('/api/v1/ai/admin/venice-balance', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+  if (!VENICE_ADMIN_KEY) {
+    reply.code(503);
+    return { error: 'Venice key not configured' };
+  }
+  try {
+    const [rateLimitsRes, apiKeysRes] = await Promise.all([
+      fetch(`${VENICE_BASE_URL}/api_keys/rate_limits`, {
+        headers: { Authorization: `Bearer ${VENICE_ADMIN_KEY}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      }),
+      fetch(`${VENICE_BASE_URL}/api_keys`, {
+        headers: { Authorization: `Bearer ${VENICE_ADMIN_KEY}`, Accept: 'application/json' },
+        signal: AbortSignal.timeout(10_000),
+      }),
+    ]);
+    if (!rateLimitsRes.ok) {
+      reply.code(502);
+      return { error: `Venice rate_limits returned ${rateLimitsRes.status}` };
+    }
+    const rateLimitsBody = (await rateLimitsRes.json()) as {
+      data?: { balances?: { USD?: number }; apiTier?: { id?: string }; nextEpochBegins?: string };
+    };
+    const balanceUsd = rateLimitsBody?.data?.balances?.USD ?? null;
+    const apiTier = rateLimitsBody?.data?.apiTier?.id ?? null;
+    const nextEpochBegins = rateLimitsBody?.data?.nextEpochBegins ?? null;
+
+    let consumptionLimitUsd: number | null = null;
+    let currentPeriodUsageUsd: number | null = null;
+    let trailingSevenDayUsd: number | null = null;
+    if (apiKeysRes.ok) {
+      const apiKeysBody = (await apiKeysRes.json()) as {
+        data?: Array<{
+          consumptionLimits?: { usd?: number | null };
+          currentPeriodUsage?: { usd?: string };
+          usage?: { trailingSevenDays?: { usd?: string } };
+        }>;
+      };
+      const us = apiKeysBody?.data?.[0];
+      consumptionLimitUsd = us?.consumptionLimits?.usd ?? null;
+      currentPeriodUsageUsd = us?.currentPeriodUsage?.usd ? Number(us.currentPeriodUsage.usd) : null;
+      trailingSevenDayUsd = us?.usage?.trailingSevenDays?.usd ? Number(us.usage.trailingSevenDays.usd) : null;
+    }
+
+    return {
+      balanceUsd,
+      apiTier,
+      nextEpochBegins,
+      consumptionLimitUsd,
+      currentPeriodUsageUsd,
+      trailingSevenDayUsd,
+      // Convenience flags for alerting
+      lowBalance: balanceUsd !== null && balanceUsd < 5,
+      criticalBalance: balanceUsd !== null && balanceUsd < 1,
+    };
+  } catch (err) {
+    server.log.error({ err: getErrorMessage(err) }, 'Failed to fetch Venice balance');
+    reply.code(502);
+    return { error: 'Venice balance fetch failed' };
+  }
+});
+
+// GET /api/v1/ai/topup/address — Returns the shielded address + memo for caller
+// Memo encodes userId so the watcher can credit the right account.
+// Also returns a ZEC/USD spot price (60s cache) so clients can compute the ZEC amount
+// for each tier and embed it in a ZIP-321 URI for QR-code payment.
+//
+// Price source: NEAR Intents 1Click /v0/tokens. NEAR's published ZEC price is the live
+// swap-engine quote (what users would actually achieve in a real swap), which matches
+// what Zashi already uses for in-app swaps via NearApiProvider. Falls back to CoinGecko
+// spot price if the NEAR endpoint is unreachable; falls back to the last cached value
+// if both fail. The watcher uses the same source at credit time for consistency.
+let zecUsdPriceCache: { usd: number; source: string; fetchedAt: number } | null = null;
+const ZEC_USD_TTL_MS = 60_000;
+const NEAR_TOKENS_URL = 'https://1click.chaindefuser.com/v0/tokens';
+const COINGECKO_ZEC_URL = 'https://api.coingecko.com/api/v3/simple/price?ids=zcash&vs_currencies=usd';
+
+// Sanity-bound the spot price. Mirrors the watcher's bounds — a poisoned upstream
+// returning $1e9/ZEC would otherwise drive bogus QR amounts on /topup/address.
+const MIN_ZEC_USD_PRICE = 0.01;
+const MAX_ZEC_USD_PRICE = 100_000;
+function isPlausibleZecUsdPrice(usd: unknown): usd is number {
+  return typeof usd === 'number' && Number.isFinite(usd) && usd >= MIN_ZEC_USD_PRICE && usd <= MAX_ZEC_USD_PRICE;
+}
+
+// Fixed-point conversion mirroring apps/ai-topup-watcher/src/watcher.ts:238 so the backend can
+// recompute the dollar value of an on-chain deposit independently of the caller's claim.
+// 1 ZEC = 1e8 zatoshi; µUSD = zatoshi * (price * 1e8) / 1e10.
+function zatoshiToMicroUsd(zatoshi: bigint, zecUsd: number): bigint {
+  const priceE8 = BigInt(Math.round(zecUsd * 1e8));
+  return (zatoshi * priceE8) / 10_000_000_000n;
+}
+
+async function fetchZecPriceFromNear(): Promise<number | null> {
+  try {
+    const res = await fetch(NEAR_TOKENS_URL, {
+      signal: AbortSignal.timeout(5000),
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const body: unknown = await res.json();
+    if (!Array.isArray(body)) return null;
+    for (const t of body) {
+      if (!t || typeof t !== 'object') continue;
+      const sym = (t as { symbol?: unknown }).symbol;
+      const price = (t as { price?: unknown }).price;
+      if (typeof sym === 'string' && sym.toUpperCase() === 'ZEC' && isPlausibleZecUsdPrice(price)) {
+        return price;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchZecPriceFromCoinGecko(): Promise<number | null> {
+  try {
+    const res = await fetch(COINGECKO_ZEC_URL, {
+      signal: AbortSignal.timeout(5000),
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) return null;
+    const j = (await res.json()) as { zcash?: { usd?: unknown } };
+    const usd = j.zcash?.usd;
+    return isPlausibleZecUsdPrice(usd) ? usd : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getCachedZecUsdPrice(): Promise<{ usd: number; source: string } | null> {
+  const now = Date.now();
+  if (zecUsdPriceCache && now - zecUsdPriceCache.fetchedAt < ZEC_USD_TTL_MS) {
+    return { usd: zecUsdPriceCache.usd, source: zecUsdPriceCache.source };
+  }
+  // Prefer NEAR Intents (matches Zashi's swap engine).
+  let usd = await fetchZecPriceFromNear();
+  let source = 'near-intents';
+  if (usd === null) {
+    usd = await fetchZecPriceFromCoinGecko();
+    source = 'coingecko';
+  }
+  if (usd === null) {
+    return zecUsdPriceCache
+      ? { usd: zecUsdPriceCache.usd, source: `${zecUsdPriceCache.source}-stale` }
+      : null;
+  }
+  zecUsdPriceCache = { usd, source, fetchedAt: now };
+  return { usd, source };
+}
+
+server.get('/api/v1/ai/topup/address', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  const topupZaddr = process.env.ZCHAT_AI_TOPUP_ZADDR || '';
+  if (!topupZaddr) {
+    reply.code(503);
+    return { error: 'Top-up address not configured on this server yet' };
+  }
+  // Memo tag: "ai-topup:<userId>" — watcher matches incoming notes by prefix
+  const memo = `ai-topup:${auth.userId}`;
+  // Default tiers offered as buttons; clients may also send a custom USD amount.
+  const tiers = [5, 10, 20, 100];
+  const price = await getCachedZecUsdPrice();
+  return {
+    address: topupZaddr,
+    memo,
+    tiers,
+    zecUsdPrice: price?.usd ?? null,
+    zecUsdPriceSource: price?.source ?? null,
+  };
+});
+
+// GET /api/v1/ai/topup/status — list of pending + recent deposits
+server.get('/api/v1/ai/topup/status', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  const deposits = await prisma.aiTopupDeposit.findMany({
+    where: { userId: auth.userId },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+  });
+  return {
+    deposits: deposits.map((d) => ({
+      id: d.id,
+      zecTxId: d.zecTxId,
+      zatoshi: d.zatoshi.toString(),
+      microUsdCredited: d.microUsdCredited.toString(),
+      usdCredited: Number(d.microUsdCredited) / 1_000_000,
+      status: d.status,
+      createdAt: d.createdAt.toISOString(),
+      creditedAt: d.creditedAt?.toISOString() ?? null,
+    })),
+  };
+});
+
+// POST /api/v1/ai/chat — proxy /chat/completions, debit user on success
+// Body: { model, messages, max_tokens?, temperature?, stream? }
+type ChatBody = {
+  model?: string;
+  messages?: Array<{ role: string; content: string }>;
+  max_tokens?: number;
+  temperature?: number;
+  stream?: boolean;
+};
+server.post('/api/v1/ai/chat', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  if (!VENICE_ADMIN_KEY) {
+    reply.code(503);
+    return { error: 'Venice not configured' };
+  }
+  const body = request.body as ChatBody | undefined;
+  const model = body?.model ?? 'venice-uncensored-1-2';
+  const messages = body?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    reply.code(400);
+    return { error: 'messages required' };
+  }
+  // SECURITY: max_tokens drives the pre-flight cost estimate which is decremented from
+  // the balance. A negative value would make the estimated charge negative, and a
+  // `decrement` of a negative number INCREASES the balance (Postgres: bal - (-x) = bal + x),
+  // letting any user mint free credit. Reject non-positive / non-integer before any math.
+  const rawMaxTokens = body?.max_tokens;
+  if (
+    rawMaxTokens !== undefined &&
+    (typeof rawMaxTokens !== 'number' || !Number.isInteger(rawMaxTokens) || rawMaxTokens < 1)
+  ) {
+    reply.code(400);
+    return { error: 'max_tokens must be a positive integer' };
+  }
+  const maxTokens = Math.min(rawMaxTokens ?? 1024, 8192);
+
+  const account = await prisma.aiAccount.findUnique({ where: { userId: auth.userId } });
+  if (!account) {
+    reply.code(404);
+    return { error: 'Account not found' };
+  }
+
+  // Hard balance gate — the $0.20 was credited at registration; balance == 0 = top up.
+  if (account.balanceMicroUsd <= 0n) {
+    reply.code(402);
+    return { error: 'Insufficient credit. Please top up.' };
+  }
+
+  // Lookup per-model pricing (seeded row, else derived from the live Venice catalog so any model works)
+  const pricing = await resolveModelPricing(model);
+  if (!pricing) {
+    reply.code(400);
+    return { error: `Model "${model}" not available or pricing not configured` };
+  }
+
+  // GUARD: image-only models can't be invoked through /ai/chat — they have zero token rates
+  // and would either charge $0 or fail upstream with a confusing error. Force routing to /ai/image.
+  if (Number(pricing.outputPer1mUsd) === 0 && pricing.imagePerCallUsd !== null) {
+    reply.code(400);
+    return { error: `Model "${model}" is image-only — use /api/v1/ai/image` };
+  }
+
+  // FREE-TIER GATING (user requirement): until the user has consumed ALL $0.20 and topped
+  // up at least once, restrict to cheap whitelisted models. Detected via:
+  //   - has consumed any free trial (freeTrialGranted = true)
+  //   - AND no completed deposit on record
+  // i.e. balance is still purely from the free trial → restrict.
+  const hasPaidTopup = await prisma.aiTopupDeposit.findFirst({
+    where: { userId: auth.userId, status: 'credited' },
+    select: { id: true },
+  });
+  const onFreeTrial = account.freeTrialGranted && hasPaidTopup === null;
+  if (onFreeTrial && !FREE_TIER_MODELS.has(model)) {
+    reply.code(402);
+    return {
+      error: 'Free trial restricted to cheap models. Top up to unlock paid models.',
+      freeTierModels: Array.from(FREE_TIER_MODELS),
+    };
+  }
+
+  // Pre-flight: estimate worst-case cost = (input tokens × inputPer1m) + (maxTokens out × outputPer1m).
+  // Token count is approximated from character length — for most BPE tokenizers used by these models,
+  // ~3 chars ≈ 1 token in English (Cyrillic, CJK and code can be denser). Using 3 keeps us conservative
+  // (overestimates), so we never under-quote a user and end up in the negative after the call.
+  const totalInputChars = messages.reduce(
+    (acc, m) => acc + (typeof m.content === 'string' ? m.content.length : 0),
+    0,
+  );
+  const estInputTokens = Math.ceil(totalInputChars / 3);
+  // #221: a model flagged isFreeTier (shown as "Free" in the picker — the contract is "no charge")
+  // must NOT debit the user; the master key absorbs Venice's cost. Reserve/charge 0 for it. Previously
+  // the charge path ignored isFreeTier and debited the token rates, so a free-tier model with non-zero
+  // seeded rates still charged (e.g. $0.0009), contradicting its own "Free" label.
+  const isFree = pricing.isFreeTier === true;
+  const estInputUsd = (estInputTokens / 1_000_000) * Number(pricing.inputPer1mUsd);
+  const estOutputUsd = (maxTokens / 1_000_000) * Number(pricing.outputPer1mUsd);
+  const estCostUsd = estInputUsd + estOutputUsd;
+  const estChargeMicroUsd = isFree ? 0n : microUsd(estCostUsd * VENICE_MARKUP);
+  // Defense-in-depth: a non-positive reservation must never reach the `decrement` below for a PAID
+  // model — `max_tokens` is validated positive, but a misconfigured (negative) pricing row could still
+  // produce a ≤0 charge which, decremented, would mint balance. A free-tier model legitimately
+  // reserves 0, so this guard must not fire on it.
+  if (!isFree && estChargeMicroUsd <= 0n) {
+    reply.code(400);
+    return { error: 'Computed charge is non-positive; request rejected.' };
+  }
+  if (estChargeMicroUsd > account.balanceMicroUsd) {
+    reply.code(402);
+    return {
+      error: 'Estimated cost exceeds available balance. Top up or reduce prompt size or max_tokens.',
+      estChargeMicroUsd: estChargeMicroUsd.toString(),
+      estInputTokens,
+      estOutputTokens: maxTokens,
+      balanceMicroUsd: account.balanceMicroUsd.toString(),
+    };
+  }
+
+  // Reserve the worst-case charge BEFORE we call Venice. The DB CHECK constraint
+  // (AiAccount.balanceMicroUsd >= 0) catches concurrent /chat calls that would otherwise
+  // race the in-memory balance gate above and drain the account negative. If the reservation
+  // fails we never pay Venice, so the user sees a 402 instead of a free LLM call charged
+  // to the master key.
+  // Free-tier reserves 0 → skip the decrement entirely (no balance touched).
+  if (estChargeMicroUsd > 0n) {
+    try {
+      await prisma.aiAccount.update({
+        where: { userId: auth.userId },
+        data: { balanceMicroUsd: { decrement: estChargeMicroUsd } },
+      });
+    } catch (err) {
+      if (isBalanceCheckViolation(err)) {
+        reply.code(402);
+        return { error: 'Insufficient credit for this request. Concurrent calls may have drained the balance.' };
+      }
+      throw err;
+    }
+  }
+
+  // Call Venice
+  let venicePayload: { id?: string; usage?: { prompt_tokens?: number; completion_tokens?: number }; choices?: unknown[] };
+  try {
+    const upstream = await fetch(`${VENICE_BASE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${VENICE_ADMIN_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        messages,
+        max_tokens: maxTokens,
+        temperature: body?.temperature ?? 0.7,
+        stream: false, // SSE streaming is Phase 1.1
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+      // Venice rejected the call — refund the full reservation and record the failure.
+      await prisma.$transaction([
+        prisma.aiAccount.update({
+          where: { userId: auth.userId },
+          data: { balanceMicroUsd: { increment: estChargeMicroUsd } },
+        }),
+        prisma.aiUsageEvent.create({
+          data: {
+            userId: auth.userId,
+            model,
+            endpoint: 'chat',
+            veniceCostMicroUsd: 0n,
+            chargedMicroUsd: 0n,
+            marginMicroUsd: 0n,
+            success: false,
+            errorCode: `HTTP_${upstream.status}`,
+          },
+        }),
+      ]);
+      reply.code(upstream.status === 429 ? 429 : 502);
+      return { error: `Venice error (${upstream.status})`, detail: text.slice(0, 300) };
+    }
+    venicePayload = JSON.parse(text);
+  } catch (err) {
+    // Refund the reservation on a Venice connection failure too.
+    await prisma.aiAccount.update({
+      where: { userId: auth.userId },
+      data: { balanceMicroUsd: { increment: estChargeMicroUsd } },
+    }).catch(() => undefined);
+    server.log.error({ err: getErrorMessage(err), model }, 'Venice chat upstream failed');
+    reply.code(504);
+    return { error: 'Venice upstream timeout/failure' };
+  }
+
+  // Compute actual cost from returned usage
+  const inTok = venicePayload.usage?.prompt_tokens ?? 0;
+  const outTok = venicePayload.usage?.completion_tokens ?? 0;
+  const veniceCostUsd =
+    (inTok / 1_000_000) * Number(pricing.inputPer1mUsd) +
+    (outTok / 1_000_000) * Number(pricing.outputPer1mUsd);
+  const veniceMicroUsd = microUsd(veniceCostUsd);
+  // #221: free-tier charges the USER 0 (master key eats the Venice cost → negative margin, recorded
+  // for accounting). Paid models charge cost × markup as before.
+  const chargedMicroUsd = isFree ? 0n : microUsd(veniceCostUsd * VENICE_MARKUP);
+
+  // Reconcile: the reservation already debited estChargeMicroUsd. If the actual charge
+  // is lower (almost always — output tokens ≤ max), refund the diff. If higher (extremely
+  // rare: Venice exceeds max_tokens), still cap at the reserved amount and accept the
+  // margin loss rather than failing the request after we've already paid Venice.
+  const reconcileDelta = estChargeMicroUsd - chargedMicroUsd; // ≥0 means refund
+  const finalChargeMicroUsd = chargedMicroUsd > estChargeMicroUsd ? estChargeMicroUsd : chargedMicroUsd;
+  const finalMarginMicroUsd = finalChargeMicroUsd - veniceMicroUsd;
+  const after = await prisma.$transaction(async (tx) => {
+    const updated =
+      reconcileDelta > 0n
+        ? await tx.aiAccount.update({
+            where: { userId: auth.userId },
+            data: { balanceMicroUsd: { increment: reconcileDelta } },
+          })
+        : await tx.aiAccount.findUniqueOrThrow({ where: { userId: auth.userId } });
+    await tx.aiUsageEvent.create({
+      data: {
+        userId: auth.userId,
+        model,
+        endpoint: 'chat',
+        inputTokens: inTok,
+        outputTokens: outTok,
+        veniceCostMicroUsd: veniceMicroUsd,
+        chargedMicroUsd: finalChargeMicroUsd,
+        marginMicroUsd: finalMarginMicroUsd,
+        success: true,
+        veniceRequestId: venicePayload.id ?? null,
+      },
+    });
+    return updated;
+  });
+
+  return {
+    ...venicePayload,
+    zchat_meta: {
+      chargedMicroUsd: finalChargeMicroUsd.toString(),
+      chargedUsd: Number(finalChargeMicroUsd) / 1_000_000,
+      balanceAfterMicroUsd: after.balanceMicroUsd.toString(),
+      balanceAfterUsd: Number(after.balanceMicroUsd) / 1_000_000,
+    },
+  };
+});
+
+// POST /api/v1/ai/image — proxy Venice's NATIVE /image/generate, debit by per-image price.
+// We use the native endpoint (not the OpenAI-compat /images/generations) because only the native
+// endpoint exposes `safe_mode` and `hide_watermark`. The OpenAI-compat endpoint has
+// additionalProperties:false (rejects safe_mode with a 400) and defaults to blurring adult content.
+// Default safe_mode to FALSE so this "Private/Shielded AI" surface is genuinely uncensored; the
+// client may still send safe_mode:true to opt into blurring. Native returns {images:[base64]} which
+// we repackage into the OpenAI {data:[{b64_json}]} shape the Android client already parses.
+type ImageBody = { model?: string; prompt?: string; n?: number; size?: string; safe_mode?: boolean };
+server.post('/api/v1/ai/image', async (request, reply) => {
+  const auth = await authenticateAiUser(request, reply);
+  if (!auth) return;
+  if (!VENICE_ADMIN_KEY) {
+    reply.code(503);
+    return { error: 'Venice not configured' };
+  }
+  const body = request.body as ImageBody | undefined;
+  const model = body?.model ?? 'venice-sd35';
+  const prompt = body?.prompt;
+  // Validate `n` before the cost math: a non-numeric value (JSON allows strings) would make
+  // Math.max('x', 1) = NaN → veniceCostUsd NaN → microUsd(NaN) throws an uncaught RangeError (500).
+  const rawN = body?.n;
+  if (rawN !== undefined && (typeof rawN !== 'number' || !Number.isFinite(rawN))) {
+    reply.code(400);
+    return { error: 'n must be a finite number' };
+  }
+  const n = Math.min(Math.max(rawN ?? 1, 1), 4);
+  if (!prompt || typeof prompt !== 'string') {
+    reply.code(400);
+    return { error: 'prompt required' };
+  }
+
+  const account = await prisma.aiAccount.findUnique({ where: { userId: auth.userId } });
+  if (!account) {
+    reply.code(404);
+    return { error: 'Account not found' };
+  }
+  const pricing = await resolveModelPricing(model);
+  if (!pricing || !pricing.imagePerCallUsd) {
+    reply.code(400);
+    return { error: `Image model "${model}" not available or pricing not configured` };
+  }
+  // #221: free-tier image models charge the user 0 (master key absorbs Venice's cost) — honor the
+  // "Free" contract here too, mirroring /ai/chat. A free-tier model is usable at $0 balance, so the
+  // positive-balance gate applies only to PAID models.
+  const isFree = pricing.isFreeTier === true;
+  if (!isFree && account.balanceMicroUsd <= 0n) {
+    reply.code(402);
+    return { error: 'Insufficient credit. Please top up.' };
+  }
+  const veniceCostUsd = Number(pricing.imagePerCallUsd) * n;
+  const veniceMicroUsd = microUsd(veniceCostUsd);
+  const chargedMicroUsd = isFree ? 0n : microUsd(veniceCostUsd * VENICE_MARKUP);
+  // A PAID model that computes to $0 means broken/missing pricing — reject rather than serve free
+  // (mirrors /ai/chat). Free-tier ($0 by contract) is allowed through.
+  if (!isFree && chargedMicroUsd <= 0n) {
+    reply.code(500);
+    return { error: 'Pricing unavailable for this model.' };
+  }
+  if (chargedMicroUsd > account.balanceMicroUsd) {
+    reply.code(402);
+    // Structured fields let the client show a specific "$X balance, needs ~$Y" message.
+    return {
+      error: 'Insufficient credit for this image request.',
+      estChargeMicroUsd: chargedMicroUsd.toString(),
+      balanceMicroUsd: account.balanceMicroUsd.toString(),
+    };
+  }
+
+  // Reserve the charge before calling Venice (matches /ai/chat — see comment there). Free-tier
+  // reserves 0 → skip the decrement entirely.
+  if (chargedMicroUsd > 0n) {
+    try {
+      await prisma.aiAccount.update({
+        where: { userId: auth.userId },
+        data: { balanceMicroUsd: { decrement: chargedMicroUsd } },
+      });
+    } catch (err) {
+      if (isBalanceCheckViolation(err)) {
+        reply.code(402);
+        return { error: 'Insufficient credit for this image request. Concurrent calls may have drained the balance.' };
+      }
+      throw err;
+    }
+  }
+
+  // Native /image/generate takes width/height (1–1280), not an OpenAI "WxH" size string. Parse and
+  // clamp; fall back to 1024². `variants` (1–4) is the native equivalent of OpenAI `n`.
+  const parseDim = (v: string | undefined, idx: number): number => {
+    const parts = (v ?? '1024x1024').toLowerCase().split('x');
+    const raw = Number(parts[idx]);
+    if (!Number.isFinite(raw)) return 1024;
+    return Math.min(Math.max(Math.round(raw), 1), 1280);
+  };
+  const width = parseDim(body?.size, 0);
+  const height = parseDim(body?.size, 1);
+  const safeMode = body?.safe_mode === true; // default false → uncensored
+  try {
+    const upstream = await fetch(`${VENICE_BASE_URL}/image/generate`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${VENICE_ADMIN_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model,
+        prompt,
+        width,
+        height,
+        variants: n,
+        safe_mode: safeMode,
+        hide_watermark: true,
+        format: 'png',
+        return_binary: false,
+      }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    const text = await upstream.text();
+    if (!upstream.ok) {
+      // Refund the reservation on Venice failure.
+      await prisma.$transaction([
+        prisma.aiAccount.update({
+          where: { userId: auth.userId },
+          data: { balanceMicroUsd: { increment: chargedMicroUsd } },
+        }),
+        prisma.aiUsageEvent.create({
+          data: {
+            userId: auth.userId,
+            model,
+            endpoint: 'image',
+            imageCount: n,
+            veniceCostMicroUsd: 0n,
+            chargedMicroUsd: 0n,
+            marginMicroUsd: 0n,
+            success: false,
+            errorCode: `HTTP_${upstream.status}`,
+          },
+        }),
+      ]);
+      reply.code(upstream.status === 429 ? 429 : 502);
+      return { error: `Venice error (${upstream.status})`, detail: text.slice(0, 300) };
+    }
+    // Native shape: { id, images: ["<base64>", ...], timing }. Repackage into the OpenAI-compatible
+    // { created, data: [{ b64_json }] } shape the Android client parses.
+    const native = JSON.parse(text) as { id?: string; images?: unknown };
+    const images = Array.isArray(native.images) ? native.images.filter((x): x is string => typeof x === 'string') : [];
+    const payload = {
+      created: Math.floor(Date.now() / 1000),
+      data: images.map((b64) => ({ b64_json: b64 })),
+    };
+    const after = await prisma.$transaction(async (tx) => {
+      // Reservation already debited chargedMicroUsd; just look up the current row for the response.
+      const updated = await tx.aiAccount.findUniqueOrThrow({
+        where: { userId: auth.userId },
+      });
+      await tx.aiUsageEvent.create({
+        data: {
+          userId: auth.userId,
+          model,
+          endpoint: 'image',
+          imageCount: n,
+          veniceCostMicroUsd: veniceMicroUsd,
+          chargedMicroUsd: chargedMicroUsd,
+          marginMicroUsd: chargedMicroUsd - veniceMicroUsd,
+          success: true,
+        },
+      });
+      return updated;
+    });
+    return {
+      ...payload,
+      zchat_meta: {
+        chargedMicroUsd: chargedMicroUsd.toString(),
+        chargedUsd: Number(chargedMicroUsd) / 1_000_000,
+        balanceAfterMicroUsd: after.balanceMicroUsd.toString(),
+        balanceAfterUsd: Number(after.balanceMicroUsd) / 1_000_000,
+      },
+    };
+  } catch (err) {
+    // Refund the reservation on Venice connection failure.
+    await prisma.aiAccount.update({
+      where: { userId: auth.userId },
+      data: { balanceMicroUsd: { increment: chargedMicroUsd } },
+    }).catch(() => undefined);
+    server.log.error({ err: getErrorMessage(err) }, 'Venice image upstream failed');
+    reply.code(504);
+    return { error: 'Venice upstream failure' };
+  }
+});
+
+// POST /api/v1/ai/admin/credit — manual credit (admin-only, for ZEC top-ups or refunds)
+// Body: { userId, microUsd, note? }
+//
+// Capped at $10,000 per call ($10B µUSD). If the admin secret leaks and an attacker
+// drives this endpoint, the per-call cap bounds damage; we still log every call.
+const ADMIN_CREDIT_MAX_MICRO_USD = 10_000n * 1_000_000n; // $10M
+server.post('/api/v1/ai/admin/credit', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+  const body = request.body as { userId?: string; microUsd?: string; note?: string } | undefined;
+  if (!body?.userId || !body.microUsd) {
+    reply.code(400);
+    return { error: 'userId and microUsd required' };
+  }
+  let amount: bigint;
+  try { amount = BigInt(body.microUsd); } catch { reply.code(400); return { error: 'Invalid microUsd' }; }
+  if (amount <= 0n || amount > ADMIN_CREDIT_MAX_MICRO_USD) {
+    reply.code(400);
+    return { error: `microUsd must be 1..${ADMIN_CREDIT_MAX_MICRO_USD.toString()}` };
+  }
+  const account = await prisma.aiAccount.update({
+    where: { userId: body.userId },
+    data: { balanceMicroUsd: { increment: amount } },
+  });
+  server.log.info(
+    { userId: body.userId, microUsd: amount.toString(), note: body.note ?? '' },
+    'AI admin credit applied',
+  );
+  return {
+    userId: account.userId,
+    newBalanceMicroUsd: account.balanceMicroUsd.toString(),
+    newBalanceUsd: Number(account.balanceMicroUsd) / 1_000_000,
+  };
+});
+
+// POST /api/v1/ai/admin/credit-from-deposit — idempotent credit from on-chain ZEC deposit
+// Called by the deposit watcher after it observes an incoming note with memo `ai-topup:<userId>`
+// and waits for confirmation depth. Idempotent on zecTxId via @unique constraint.
+// Body: { userId, zecTxId, zatoshi, zecUsdPrice, microUsd, note? }
+server.post('/api/v1/ai/admin/credit-from-deposit', async (request, reply) => {
+  await authenticateAdmin(request, reply);
+  const body = request.body as {
+    userId?: string;
+    zecTxId?: string;
+    zatoshi?: string;
+    zecUsdPrice?: string;
+    microUsd?: string;
+    note?: string;
+  } | undefined;
+  if (!body?.userId || !body.zecTxId || !body.zatoshi || !body.zecUsdPrice || !body.microUsd) {
+    reply.code(400);
+    return { error: 'userId, zecTxId, zatoshi, zecUsdPrice, microUsd all required' };
+  }
+  // Rename local to avoid shadowing the module-level `microUsd(usd)` helper used elsewhere.
+  let amountMicroUsd: bigint;
+  let zatoshi: bigint;
+  try {
+    amountMicroUsd = BigInt(body.microUsd);
+    zatoshi = BigInt(body.zatoshi);
+  } catch {
+    reply.code(400);
+    return { error: 'Invalid bigint for microUsd or zatoshi' };
+  }
+  if (amountMicroUsd <= 0n || amountMicroUsd > ADMIN_CREDIT_MAX_MICRO_USD) {
+    reply.code(400);
+    return { error: `microUsd must be 1..${ADMIN_CREDIT_MAX_MICRO_USD.toString()}` };
+  }
+  if (zatoshi <= 0n) {
+    reply.code(400);
+    return { error: 'zatoshi must be > 0' };
+  }
+  const existing = await prisma.aiTopupDeposit.findUnique({ where: { zecTxId: body.zecTxId } });
+  if (existing) {
+    return {
+      status: 'already-credited',
+      depositId: existing.id,
+      userId: existing.userId,
+      microUsdCredited: existing.microUsdCredited.toString(),
+    };
+  }
+  const account = await prisma.aiAccount.findUnique({ where: { userId: body.userId } });
+  if (!account) {
+    reply.code(404);
+    return { error: `AiAccount not found for userId=${body.userId}` };
+  }
+  // On-chain re-verification. Set CREDIT_REQUIRE_ONCHAIN_VERIFY=1 in production so
+  // admin-key holders can't fabricate credits — the txid must actually exist in our
+  // watcher's wallet with the claimed memo and zatoshi. In dev / test we skip to keep
+  // the unit tests hermetic.
+  if (process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY === '1') {
+    const walletDbPath = process.env.WALLET_DB_PATH;
+    if (!walletDbPath) {
+      reply.code(503);
+      return { error: 'On-chain verification configured but WALLET_DB_PATH not set' };
+    }
+    const verifyErr = await verifyDepositOnChain({
+      walletDbPath,
+      zecTxId: body.zecTxId,
+      expectedUserId: body.userId,
+      expectedZatoshi: zatoshi,
+    });
+    if (verifyErr) {
+      server.log.warn(
+        { zecTxId: body.zecTxId, userId: body.userId, reason: verifyErr },
+        'credit-from-deposit on-chain verification failed',
+      );
+      reply.code(403);
+      return { error: `On-chain verification failed: ${verifyErr}` };
+    }
+    // SECURITY: on-chain verify confirms the txid/memo/zatoshi, but the *dollar* amount in the
+    // body is otherwise unbound — an ADMIN_SECRET holder (or a buggy/compromised watcher) could
+    // reference a genuine sub-$1 deposit and credit any µUSD up to the cap. Recompute the expected
+    // µUSD from the verified zatoshi and a bounds-checked price, and bind the credit to it.
+    const priceNum = Number(body.zecUsdPrice);
+    if (!isPlausibleZecUsdPrice(priceNum)) {
+      reply.code(400);
+      return { error: 'zecUsdPrice out of plausible bounds' };
+    }
+    const expectedMicroUsd = zatoshiToMicroUsd(zatoshi, priceNum);
+    const diff = amountMicroUsd > expectedMicroUsd ? amountMicroUsd - expectedMicroUsd : expectedMicroUsd - amountMicroUsd;
+    // 1% tolerance for fixed-point rounding differences between watcher and server.
+    if (expectedMicroUsd <= 0n || diff * 100n > expectedMicroUsd) {
+      server.log.warn(
+        { zecTxId: body.zecTxId, userId: body.userId, claimed: amountMicroUsd.toString(), expected: expectedMicroUsd.toString(), price: priceNum },
+        'credit-from-deposit µUSD inconsistent with on-chain zatoshi',
+      );
+      reply.code(403);
+      return {
+        error: `microUsd ${amountMicroUsd} inconsistent with on-chain zatoshi ${zatoshi} at price ${priceNum} (expected ~${expectedMicroUsd})`,
+      };
+    }
+    // Credit the server-computed value, never the caller's raw assertion.
+    amountMicroUsd = expectedMicroUsd;
+  }
+  // Race: between the findUnique above and the transaction below, a concurrent watcher
+  // request can sneak in with the same zecTxId. Catch the @unique violation (P2002) and
+  // return already-credited so the watcher's retry sees a clean success.
+  let deposit: { id: string; microUsdCredited: bigint };
+  let updatedAccount: { userId: string; balanceMicroUsd: bigint };
+  try {
+    [deposit, updatedAccount] = await prisma.$transaction([
+      prisma.aiTopupDeposit.create({
+        data: {
+          userId: body.userId,
+          zecTxId: body.zecTxId,
+          zatoshi,
+          zecUsdPriceAtCredit: body.zecUsdPrice,
+          microUsdCredited: amountMicroUsd,
+          status: 'credited',
+          creditedAt: new Date(),
+        },
+      }),
+      prisma.aiAccount.update({
+        where: { userId: body.userId },
+        data: { balanceMicroUsd: { increment: amountMicroUsd } },
+      }),
+    ]);
+  } catch (err) {
+    if (getPrismaErrorCode(err) === 'P2002') {
+      const dupe = await prisma.aiTopupDeposit.findUnique({ where: { zecTxId: body.zecTxId } });
+      if (dupe) {
+        return {
+          status: 'already-credited',
+          depositId: dupe.id,
+          userId: dupe.userId,
+          microUsdCredited: dupe.microUsdCredited.toString(),
+        };
+      }
+      // P2002 raised but the dupe row was rolled back — surface a retryable status.
+      server.log.warn(
+        { zecTxId: body.zecTxId, userId: body.userId },
+        'credit-from-deposit P2002 but dupe row not found — likely concurrent rollback',
+      );
+      reply.code(503);
+      return { error: 'Concurrent write detected. Please retry.' };
+    }
+    throw err;
+  }
+  server.log.info(
+    {
+      userId: body.userId,
+      zecTxId: body.zecTxId,
+      zatoshi: zatoshi.toString(),
+      microUsd: amountMicroUsd.toString(),
+      note: body.note ?? '',
+    },
+    'AI deposit credited',
+  );
+  return {
+    status: 'credited',
+    depositId: deposit.id,
+    userId: updatedAccount.userId,
+    microUsdCredited: deposit.microUsdCredited.toString(),
+    newBalanceMicroUsd: updatedAccount.balanceMicroUsd.toString(),
+    newBalanceUsd: Number(updatedAccount.balanceMicroUsd) / 1_000_000,
+  };
+});
+
 // Export server for testing (secrets NOT exported — tests use env vars)
 export { server, prisma };
 
@@ -1674,4 +2919,3 @@ const start = async () => {
 if (require.main === module) {
   start();
 }
-

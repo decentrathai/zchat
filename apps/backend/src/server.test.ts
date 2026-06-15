@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi, beforeEach, afterEach } from 'vitest';
 import jwt from 'jsonwebtoken';
 
 // Set environment variables in vi.hoisted so they run BEFORE module imports
@@ -9,10 +9,20 @@ vi.hoisted(() => {
   process.env.ZCASH_RPC_URL = 'http://mock-zcash-rpc';
   process.env.NODE_ENV = 'test';
   process.env.APK_DIR = '/tmp/test-apk';
+  process.env.VENICE_ADMIN_KEY = 'test-venice-key';
 });
 
 // Use vi.hoisted to create mock objects that are available during vi.mock hoisting
-const { mockPrismaWhitelist, mockPrismaDownloadCode, mockPrismaUser } = vi.hoisted(() => ({
+const {
+  mockPrismaWhitelist,
+  mockPrismaDownloadCode,
+  mockPrismaUser,
+  mockPrismaAiAccount,
+  mockPrismaAiTopupDeposit,
+  mockPrismaAiUsageEvent,
+  mockPrismaAiModelPricing,
+  mockPrismaTransaction,
+} = vi.hoisted(() => ({
   mockPrismaWhitelist: {
     findUnique: vi.fn(),
     findMany: vi.fn(),
@@ -30,6 +40,29 @@ const { mockPrismaWhitelist, mockPrismaDownloadCode, mockPrismaUser } = vi.hoist
     create: vi.fn(),
     update: vi.fn(),
   },
+  mockPrismaAiAccount: {
+    findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
+  mockPrismaAiTopupDeposit: {
+    findUnique: vi.fn(),
+    findFirst: vi.fn(),
+    findMany: vi.fn(),
+    create: vi.fn(),
+    update: vi.fn(),
+  },
+  mockPrismaAiUsageEvent: {
+    create: vi.fn(),
+    findMany: vi.fn(),
+  },
+  mockPrismaAiModelPricing: {
+    findUnique: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+  },
+  mockPrismaTransaction: vi.fn(),
 }));
 
 vi.mock('@prisma/client', () => ({
@@ -37,6 +70,12 @@ vi.mock('@prisma/client', () => ({
     whitelist: mockPrismaWhitelist,
     downloadCode: mockPrismaDownloadCode,
     user: mockPrismaUser,
+    aiAccount: mockPrismaAiAccount,
+    aiTopupDeposit: mockPrismaAiTopupDeposit,
+    aiUsageEvent: mockPrismaAiUsageEvent,
+    aiModelPricing: mockPrismaAiModelPricing,
+    $transaction: mockPrismaTransaction,
+    $disconnect: vi.fn().mockResolvedValue(undefined),
   })),
 }));
 
@@ -51,6 +90,9 @@ vi.mock('./wallet', () => ({
   getPrimaryAddress: vi.fn().mockResolvedValue('u1mockaddress'),
   getBalance: vi.fn().mockResolvedValue(100000),
   buildTransaction: vi.fn().mockResolvedValue({ txHex: '0x123', txid: 'mock-txid' }),
+  // null = on-chain verification passed; tests that exercise CREDIT_REQUIRE_ONCHAIN_VERIFY
+  // override this per-case.
+  verifyDepositOnChain: vi.fn().mockResolvedValue(null),
 }));
 
 // Mock bcrypt
@@ -71,7 +113,7 @@ vi.mock('resend', () => ({
 }));
 
 // Now import the ACTUAL server - this tests the real code
-import { server } from './server';
+import { server, __resetRegisterRateLimit } from './server';
 
 // Test secrets match the stubbed env vars above
 const testJwtSecret = 'test-jwt-secret';
@@ -673,5 +715,773 @@ describe('JWT Authentication Edge Cases', () => {
     });
 
     expect(response.statusCode).toBe(200);
+  });
+});
+
+describe('AI Revenue Routes', () => {
+  describe('POST /api/v1/ai/auth/register', () => {
+    it('creates a new account with $0.20 free trial', async () => {
+      let createdAccount: { userId: string; tokenHash: string; balanceMicroUsd: bigint } | null = null;
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { userId: string; tokenHash: string; balanceMicroUsd: bigint } }) => {
+        createdAccount = data;
+        return data;
+      });
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/auth/register',
+      });
+
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(typeof body.userId).toBe('string');
+      expect(body.userId.length).toBeGreaterThan(16);
+      expect(typeof body.token).toBe('string');
+      expect(body.freeTrialCreditUsd).toBe(0.2);
+      expect(body.balanceMicroUsd).toBe('200000');
+      expect(body.rebound).toBe(false);
+      expect(mockPrismaAiAccount.create).toHaveBeenCalledTimes(1);
+      expect(createdAccount).not.toBeNull();
+      expect(createdAccount!.balanceMicroUsd.toString()).toBe('200000');
+    });
+
+    it('persists walletPubkey when provided', async () => {
+      const pubkey = 'a'.repeat(64);
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce(null); // no existing account
+      let createdAccount: { pubkey: string | null } | null = null;
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { pubkey: string | null; userId: string; tokenHash: string; balanceMicroUsd: bigint } }) => {
+        createdAccount = data;
+        return data;
+      });
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/auth/register',
+        payload: { walletPubkey: pubkey },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().rebound).toBe(false);
+      expect(createdAccount!.pubkey).toBe(pubkey);
+    });
+
+    it('rejects malformed walletPubkey by falling back to unbound account', async () => {
+      // Non-hex pubkey is silently dropped (treated as missing); existing-account lookup skipped.
+      let createdAccount: { pubkey: string | null } | null = null;
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { pubkey: string | null; userId: string; tokenHash: string; balanceMicroUsd: bigint } }) => {
+        createdAccount = data;
+        return data;
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/auth/register',
+        payload: { walletPubkey: 'not-a-hex-pubkey' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(createdAccount!.pubkey).toBeNull();
+      expect(mockPrismaAiAccount.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('re-mints token for existing pubkey without re-granting free trial', async () => {
+      const pubkey = 'b'.repeat(64);
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_existing',
+        tokenHash: 'old-hash',
+        balanceMicroUsd: 8_500_000n,
+        freeTrialGranted: true,
+        pubkey,
+      });
+      mockPrismaAiAccount.update.mockResolvedValueOnce({
+        userId: 'cuid_existing',
+        tokenHash: 'new-hash',
+        balanceMicroUsd: 8_500_000n,
+        freeTrialGranted: true,
+        pubkey,
+      });
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/auth/register',
+        payload: { walletPubkey: pubkey },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.userId).toBe('cuid_existing');
+      // SECURITY: rebind response must NOT echo the balance (no balance oracle on a pubkey-derived,
+      // address-knowable rebind). The client fetches balance via /ai/balance with the new token.
+      expect(body.balanceMicroUsd).toBeUndefined();
+      expect(body.freeTrialCreditUsd).toBe(0);
+      expect(body.rebound).toBe(true);
+      expect(mockPrismaAiAccount.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /api/v1/ai/balance', () => {
+    it('returns 401 without bearer token', async () => {
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/ai/balance',
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns 401 for unknown bearer token', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce(null);
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/ai/balance',
+        headers: { authorization: 'Bearer unknown-token' },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns balance for known token', async () => {
+      // authenticateAiUser hashes the token and does findUnique({ tokenHash })
+      // Then /ai/balance does a second findUnique({ userId })
+      mockPrismaAiAccount.findUnique
+        .mockResolvedValueOnce({
+          userId: 'cuid_abc',
+          balanceMicroUsd: 1_500_000n,
+          freeTrialGranted: false,
+          tokenHash: 'x',
+        })
+        .mockResolvedValueOnce({
+          userId: 'cuid_abc',
+          balanceMicroUsd: 1_500_000n,
+          freeTrialGranted: false,
+        });
+
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/ai/balance',
+        headers: { authorization: 'Bearer some-token' },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.balanceMicroUsd).toBe('1500000');
+      expect(body.balanceUsd).toBe(1.5);
+    });
+  });
+
+  describe('GET /api/v1/ai/topup/address', () => {
+    it('returns 503 when ZCHAT_AI_TOPUP_ZADDR is not configured', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        tokenHash: 'x',
+        balanceMicroUsd: 0n,
+        freeTrialGranted: false,
+      });
+      const originalAddr = process.env.ZCHAT_AI_TOPUP_ZADDR;
+      delete process.env.ZCHAT_AI_TOPUP_ZADDR;
+      try {
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/ai/topup/address',
+          headers: { authorization: 'Bearer some-token' },
+        });
+        expect(response.statusCode).toBe(503);
+      } finally {
+        if (originalAddr) process.env.ZCHAT_AI_TOPUP_ZADDR = originalAddr;
+      }
+    });
+
+    it('returns address + memo + tiers when configured', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        tokenHash: 'x',
+        balanceMicroUsd: 0n,
+        freeTrialGranted: false,
+      });
+      process.env.ZCHAT_AI_TOPUP_ZADDR = 'u1mockaddress';
+      try {
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/ai/topup/address',
+          headers: { authorization: 'Bearer some-token' },
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.address).toBe('u1mockaddress');
+        expect(body.memo).toBe('ai-topup:cuid_abc');
+        expect(body.tiers).toEqual([5, 10, 20, 100]);
+      } finally {
+        delete process.env.ZCHAT_AI_TOPUP_ZADDR;
+      }
+    });
+  });
+
+  describe('POST /api/v1/ai/admin/credit', () => {
+    it('returns 401 without admin secret', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit',
+        payload: { userId: 'u', microUsd: '1000' },
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns 400 for missing fields', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: {},
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('returns 400 for over-cap microUsd', async () => {
+      const tooMuch = (10_000n * 1_000_000n + 1n).toString();
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { userId: 'u', microUsd: tooMuch },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('increments balance for valid credit', async () => {
+      mockPrismaAiAccount.update.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        balanceMicroUsd: 1_200_000n,
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { userId: 'cuid_abc', microUsd: '1000000', note: 'manual' },
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.newBalanceMicroUsd).toBe('1200000');
+      expect(body.newBalanceUsd).toBe(1.2);
+      expect(mockPrismaAiAccount.update).toHaveBeenCalledWith({
+        where: { userId: 'cuid_abc' },
+        data: { balanceMicroUsd: { increment: 1_000_000n } },
+      });
+    });
+  });
+
+  describe('POST /api/v1/ai/admin/credit-from-deposit', () => {
+    const baseBody = {
+      userId: 'cuid_abc',
+      zecTxId: 'tx_test_1',
+      zatoshi: '50000000',
+      zecUsdPrice: '40.00',
+      microUsd: '20000000',
+    };
+
+    it('returns 401 without admin secret', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        payload: baseBody,
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns 400 for missing fields', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { userId: 'cuid_abc' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toMatch(/required/);
+    });
+
+    it('returns 400 for non-bigint microUsd', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { ...baseBody, microUsd: 'not-a-number' },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('returns 400 for negative microUsd', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { ...baseBody, microUsd: '-1' },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('returns 400 for zero zatoshi', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { ...baseBody, zatoshi: '0' },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    it('returns 404 when AiAccount does not exist', async () => {
+      mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce(null);
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: baseBody,
+      });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('credits new deposit atomically and increments balance', async () => {
+      mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        tokenHash: 'x',
+        balanceMicroUsd: 200_000n,
+        freeTrialGranted: true,
+      });
+      const fakeDeposit = {
+        id: 'dep_1',
+        zecTxId: baseBody.zecTxId,
+        microUsdCredited: 20_000_000n,
+        userId: 'cuid_abc',
+      };
+      const fakeUpdatedAccount = { userId: 'cuid_abc', balanceMicroUsd: 20_200_000n };
+      mockPrismaTransaction.mockResolvedValueOnce([fakeDeposit, fakeUpdatedAccount]);
+
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: baseBody,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.status).toBe('credited');
+      expect(body.depositId).toBe('dep_1');
+      expect(body.microUsdCredited).toBe('20000000');
+      expect(body.newBalanceMicroUsd).toBe('20200000');
+      expect(body.newBalanceUsd).toBe(20.2);
+      expect(mockPrismaTransaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns already-credited (idempotent) when zecTxId already exists', async () => {
+      mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce({
+        id: 'dep_existing',
+        userId: 'cuid_abc',
+        zecTxId: baseBody.zecTxId,
+        microUsdCredited: 5_000_000n,
+        status: 'credited',
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: baseBody,
+      });
+      expect(response.statusCode).toBe(200);
+      const body = response.json();
+      expect(body.status).toBe('already-credited');
+      expect(body.depositId).toBe('dep_existing');
+      expect(body.microUsdCredited).toBe('5000000');
+      expect(mockPrismaTransaction).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 for microUsd over per-call cap', async () => {
+      const tooMuch = (10_000n * 1_000_000n + 1n).toString();
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/credit-from-deposit',
+        headers: { 'x-admin-secret': testAdminSecret },
+        payload: { ...baseBody, microUsd: tooMuch },
+      });
+      expect(response.statusCode).toBe(400);
+    });
+
+    // With on-chain verification enabled, the credited µUSD must be bound to the verified
+    // on-chain zatoshi × price — a holder of ADMIN_SECRET must not be able to credit an
+    // inflated dollar amount against a small genuine deposit.
+    describe('CREDIT_REQUIRE_ONCHAIN_VERIFY binds µUSD to on-chain value', () => {
+      beforeEach(() => {
+        process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY = '1';
+        process.env.WALLET_DB_PATH = '/tmp/mock-wallet-db';
+      });
+      afterEach(() => {
+        delete process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY;
+        delete process.env.WALLET_DB_PATH;
+      });
+
+      it('rejects an inflated microUsd that does not match zatoshi × price (403)', async () => {
+        mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+        mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+          userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+        });
+        // 0.5 ZEC at $40 = $20.00 ⇒ 20_000_000 µUSD. Claim ~$9,999 instead.
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/credit-from-deposit',
+          headers: { 'x-admin-secret': testAdminSecret },
+          payload: { ...baseBody, microUsd: '9999000000' },
+        });
+        expect(response.statusCode).toBe(403);
+        expect(response.json().error).toMatch(/inconsistent with on-chain zatoshi/);
+        // Never reached the balance-mutating transaction.
+        expect(mockPrismaTransaction).not.toHaveBeenCalled();
+      });
+
+      it('rejects an implausible zecUsdPrice (400)', async () => {
+        mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+        mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+          userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+        });
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/credit-from-deposit',
+          headers: { 'x-admin-secret': testAdminSecret },
+          payload: { ...baseBody, zecUsdPrice: '999999999', microUsd: '20000000' },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().error).toMatch(/zecUsdPrice out of plausible bounds/);
+        expect(mockPrismaTransaction).not.toHaveBeenCalled();
+      });
+
+      it('credits the server-computed value for a consistent deposit', async () => {
+        mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+        mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+          userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+        });
+        mockPrismaTransaction.mockResolvedValueOnce([
+          { id: 'dep_ok', zecTxId: baseBody.zecTxId, microUsdCredited: 20_000_000n, userId: 'cuid_abc' },
+          { userId: 'cuid_abc', balanceMicroUsd: 20_200_000n },
+        ]);
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/credit-from-deposit',
+          headers: { 'x-admin-secret': testAdminSecret },
+          payload: baseBody, // 0.5 ZEC × $40 = $20 = 20_000_000 µUSD (consistent)
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().status).toBe('credited');
+        expect(mockPrismaTransaction).toHaveBeenCalledTimes(1);
+      });
+    });
+  });
+
+  describe('GET /api/v1/ai/models', () => {
+    const veniceCatalog = {
+      data: [
+        { id: 'venice-uncensored-1-2', object: 'model', model_spec: { pricing: { input: 0.30, output: 0.90 } } },
+        { id: 'flux-1-schnell', object: 'model', model_spec: { type: 'image' } },
+        { id: 'no-pricing-known', object: 'model' },
+      ],
+    };
+
+    it('returns 401 without auth', async () => {
+      const response = await server.inject({ method: 'GET', url: '/api/v1/ai/models' });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('augments each known model with zchat_pricing at 1.15x markup', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        tokenHash: 'x',
+        balanceMicroUsd: 0n,
+        freeTrialGranted: false,
+      });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(veniceCatalog),
+      }) as unknown as typeof fetch;
+      mockPrismaAiModelPricing.findMany.mockResolvedValueOnce([
+        { modelId: 'venice-uncensored-1-2', inputPer1mUsd: 0.30, outputPer1mUsd: 0.90, imagePerCallUsd: null, isFreeTier: true },
+        { modelId: 'flux-1-schnell', inputPer1mUsd: 0, outputPer1mUsd: 0, imagePerCallUsd: 0.0027, isFreeTier: false },
+      ]);
+
+      try {
+        // Force fresh cache fetch by also flushing first
+        await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/flush-models-cache',
+          headers: { 'x-admin-secret': testAdminSecret },
+        });
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/ai/models',
+          headers: { authorization: 'Bearer some-token' },
+        });
+        expect(response.statusCode).toBe(200);
+        const body = JSON.parse(response.body);
+        const byId = new Map<string, Record<string, unknown>>();
+        for (const m of body.data) byId.set(m.id, m);
+
+        // Marked-up text model
+        const text = byId.get('venice-uncensored-1-2') as { zchat_pricing?: { inputPer1mUsd: number; outputPer1mUsd: number; markup: number; isFreeTier: boolean } };
+        expect(text.zchat_pricing).toBeDefined();
+        expect(text.zchat_pricing!.inputPer1mUsd).toBeCloseTo(0.30 * 1.15, 8);
+        expect(text.zchat_pricing!.outputPer1mUsd).toBeCloseTo(0.90 * 1.15, 8);
+        expect(text.zchat_pricing!.markup).toBe(1.15);
+        expect(text.zchat_pricing!.isFreeTier).toBe(true);
+
+        // Marked-up image model
+        const image = byId.get('flux-1-schnell') as { zchat_pricing?: { imagePerCallUsd: number; isFreeTier: boolean } };
+        expect(image.zchat_pricing).toBeDefined();
+        expect(image.zchat_pricing!.imagePerCallUsd).toBeCloseTo(0.0027 * 1.15, 8);
+        expect(image.zchat_pricing!.isFreeTier).toBe(false);
+
+        // Unknown model passes through unchanged
+        const unknown = byId.get('no-pricing-known') as { zchat_pricing?: unknown };
+        expect(unknown.zchat_pricing).toBeUndefined();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('returns 502 if Venice upstream errors', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc',
+        tokenHash: 'x',
+        balanceMicroUsd: 0n,
+        freeTrialGranted: false,
+      });
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        text: async () => 'service unavailable',
+      }) as unknown as typeof fetch;
+      try {
+        await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/flush-models-cache',
+          headers: { 'x-admin-secret': testAdminSecret },
+        });
+        const response = await server.inject({
+          method: 'GET',
+          url: '/api/v1/ai/models',
+          headers: { authorization: 'Bearer some-token' },
+        });
+        expect(response.statusCode).toBe(502);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('POST /api/v1/ai/chat — billing input validation', () => {
+    // Regression for the credit-minting bug: a negative max_tokens made the estimated
+    // charge negative, and `decrement` of a negative INCREASES the balance. The route must
+    // reject non-positive / non-integer max_tokens with 400 BEFORE touching the balance.
+    function mockChatAccount() {
+      // authenticateAiUser → findUnique({ tokenHash }); handler → findUnique({ userId })
+      mockPrismaAiAccount.findUnique
+        .mockResolvedValueOnce({ userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: false })
+        .mockResolvedValueOnce({ userId: 'cuid_abc', balanceMicroUsd: 200_000n, freeTrialGranted: false });
+    }
+
+    for (const badValue of [-100, 0, -1, 3.5, Number.NaN] as const) {
+      it(`rejects max_tokens=${String(badValue)} with 400 and never touches the balance`, async () => {
+        mockChatAccount();
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/chat',
+          headers: { authorization: 'Bearer some-token' },
+          payload: { model: 'venice-uncensored-1-2', messages: [{ role: 'user', content: 'hi' }], max_tokens: badValue },
+        });
+        expect(response.statusCode).toBe(400);
+        expect(response.json().error).toMatch(/max_tokens must be a positive integer/);
+        // The balance-mutating update must never have run for an invalid request.
+        expect(mockPrismaAiAccount.update).not.toHaveBeenCalled();
+      });
+    }
+  });
+
+  describe('POST /api/v1/ai/chat — Venice-catalog pricing fallback', () => {
+    // Regression for the "Model X not available or pricing not configured" 400: a model with no
+    // seeded AiModelPricing row must still resolve pricing from the live Venice catalog, so it gets
+    // PAST the pricing gate (here it then hits the free-trial gate, proving pricing resolved).
+    it('resolves an unseeded catalog model instead of 400 "not available"', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValue({ userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true });
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue(null); // no seeded row for this model
+      mockPrismaAiModelPricing.findMany.mockResolvedValue([]);
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValue(null); // still on free trial
+      // Venice catalog: text fetch returns our model priced; image fetch returns empty.
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockImplementation((url: string) =>
+        Promise.resolve({
+          ok: true,
+          status: 200,
+          text: async () =>
+            String(url).includes('type=image')
+              ? JSON.stringify({ data: [] })
+              : JSON.stringify({ data: [{ id: 'glm-unseeded-test', model_spec: { pricing: { input: { usd: 1 }, output: { usd: 3 } } } }] }),
+        }),
+      ) as unknown as typeof fetch;
+      try {
+        await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/admin/flush-models-cache',
+          headers: { 'x-admin-secret': testAdminSecret },
+        });
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/chat',
+          headers: { authorization: 'Bearer some-token' },
+          payload: { model: 'glm-unseeded-test', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 },
+        });
+        // The fix: an unseeded model must NOT be rejected by the pricing gate anymore — its price
+        // is resolved from the live Venice catalog, so the request proceeds past it.
+        expect(response.json().error ?? '').not.toMatch(/not available or pricing not configured/);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('POST /api/v1/ai/chat — free-tier billing (#221)', () => {
+    // Regression: a model flagged isFreeTier (shown as "Free" in the picker — contract is "no charge")
+    // must charge the user 0; the master key absorbs Venice's cost. Previously the charge path ignored
+    // isFreeTier and debited the seeded token rates, so a "Free" model still charged (~$0.0009) and
+    // decremented the balance.
+    it('charges 0 and never debits the balance for an isFreeTier model', async () => {
+      const account = {
+        userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+      };
+      mockPrismaAiAccount.findUnique.mockResolvedValue(account);
+      // Seeded free-tier BUT with NON-ZERO rates — the exact bug shape (would have charged > 0).
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue({
+        modelId: 'venice-uncensored-1-2', inputPer1mUsd: 0.30, outputPer1mUsd: 0.90,
+        imagePerCallUsd: null, isFreeTier: true,
+      });
+      mockPrismaAiModelPricing.findMany.mockResolvedValue([]);
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValue(null); // on free trial; model is whitelisted
+      // Settle runs as $transaction(async (tx) => …) — execute the callback against a tx stub.
+      const usageCreate = vi.fn().mockResolvedValue({});
+      mockPrismaTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb({
+          aiAccount: {
+            findUniqueOrThrow: vi.fn().mockResolvedValue(account),
+            update: vi.fn().mockResolvedValue(account),
+          },
+          aiUsageEvent: { create: usageCreate },
+        }),
+      );
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            id: 'venice-req-1',
+            usage: { prompt_tokens: 5, completion_tokens: 3 },
+            choices: [{ message: { content: 'pong' } }],
+          }),
+      }) as unknown as typeof fetch;
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/chat',
+          headers: { authorization: 'Bearer some-token' },
+          payload: { model: 'venice-uncensored-1-2', messages: [{ role: 'user', content: 'ping' }], max_tokens: 10 },
+        });
+        expect(response.statusCode).toBe(200);
+        const meta = response.json().zchat_meta;
+        expect(meta.chargedMicroUsd).toBe('0');
+        expect(meta.chargedUsd).toBe(0);
+        // The reservation/decrement must NEVER run for a free-tier request (top-level update is the
+        // reserve; only the in-transaction tx.aiAccount is touched, for the response balance read).
+        expect(mockPrismaAiAccount.update).not.toHaveBeenCalled();
+        // Usage is still recorded, with chargedMicroUsd = 0 (margin absorbs the Venice cost).
+        expect(usageCreate).toHaveBeenCalled();
+        expect(usageCreate.mock.calls[0][0].data.chargedMicroUsd).toBe(0n);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('POST /api/v1/ai/image — input validation', () => {
+    // Regression: a non-numeric `n` used to reach Math.max('x',1)=NaN → microUsd(NaN) RangeError → 500.
+    it('rejects a non-numeric n with 400 (not a 500 crash)', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+        userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: false,
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/image',
+        headers: { authorization: 'Bearer some-token' },
+        payload: { model: 'flux-1-schnell', prompt: 'a cat', n: 'lots' },
+      });
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error).toMatch(/n must be a finite number/);
+    });
+  });
+
+  describe('POST /api/v1/ai/admin/flush-models-cache', () => {
+    it('returns 401 without admin secret', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/flush-models-cache',
+      });
+      expect(response.statusCode).toBe(401);
+    });
+
+    it('returns ok with valid admin secret', async () => {
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/admin/flush-models-cache',
+        headers: { 'x-admin-secret': testAdminSecret },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ ok: true });
+    });
+  });
+
+  describe('POST /api/v1/ai/auth/register — per-route rate limit', () => {
+    it('returns 429 after the 6th call from the same IP within the window', async () => {
+      __resetRegisterRateLimit();
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { userId: string } }) => data);
+      const statuses: number[] = [];
+      for (let i = 0; i < 8; i++) {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/auth/register',
+          remoteAddress: '203.0.113.99',
+          payload: {},
+        });
+        statuses.push(response.statusCode);
+      }
+      // First 6 calls succeed (200), 7th and 8th are rate-limited (429).
+      expect(statuses.slice(0, 6)).toEqual([200, 200, 200, 200, 200, 200]);
+      expect(statuses.slice(6)).toEqual([429, 429]);
+    });
+
+    it('tracks the rate-limit window independently per remote IP', async () => {
+      __resetRegisterRateLimit();
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { userId: string } }) => data);
+      // Same IP a hammered first
+      for (let i = 0; i < 6; i++) {
+        await server.inject({ method: 'POST', url: '/api/v1/ai/auth/register', remoteAddress: '198.51.100.1', payload: {} });
+      }
+      const sevenA = await server.inject({ method: 'POST', url: '/api/v1/ai/auth/register', remoteAddress: '198.51.100.1', payload: {} });
+      // A different IP must still succeed.
+      const freshB = await server.inject({ method: 'POST', url: '/api/v1/ai/auth/register', remoteAddress: '198.51.100.2', payload: {} });
+      expect(sevenA.statusCode).toBe(429);
+      expect(freshB.statusCode).toBe(200);
+    });
+
+    it('429 response includes X-RateLimit headers', async () => {
+      __resetRegisterRateLimit();
+      mockPrismaAiAccount.create.mockImplementation(async ({ data }: { data: { userId: string } }) => data);
+      for (let i = 0; i < 6; i++) {
+        await server.inject({ method: 'POST', url: '/api/v1/ai/auth/register', remoteAddress: '198.51.100.3', payload: {} });
+      }
+      const blocked = await server.inject({ method: 'POST', url: '/api/v1/ai/auth/register', remoteAddress: '198.51.100.3', payload: {} });
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.headers['x-ratelimit-limit']).toBe('6');
+      expect(blocked.headers['x-ratelimit-remaining']).toBe('0');
+    });
   });
 });
