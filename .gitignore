@@ -6,6 +6,7 @@ node_modules/
 
 # Build outputs / caches
 .next/
+out/
 dist/
 build/
 coverage/
@@ -22,6 +23,9 @@ target/
 .env.development.local
 .env.test.local
 .env.production.local
+# Backups/variants of any .env must never be committed (a .env.bak once held a plaintext secret).
+.env.*
+!.env.example
 
 # Logs
 npm-debug.log*
