@@ -21,25 +21,27 @@ anyhow = "1.0"
 
 # Core crypto dependencies - always available (work in WASM)
 bip0039 = "0.12"
-zcash_keys = { version = "0.12", default-features = false, features = ["orchard"] }
-zcash_protocol = { version = "0.7", default-features = false }
-zcash_address = { version = "0.10", default-features = false }
+zcash_keys = { version = "0.14", default-features = false, features = ["orchard"] }
+zcash_protocol = { version = "0.9", default-features = false }
+zcash_address = { version = "0.12", default-features = false }
 zip32 = "0.2"
 rand = { version = "0.8", features = ["getrandom"] }
 
 # Native-only Zcash dependencies (SQLite, proofs, gRPC)
-# Updated to zcash_client_sqlite 0.19+ for NU6.1 support (activated Nov 24, 2025)
-zcash_client_backend = { version = "0.21", optional = true, features = ["orchard"] }
-zcash_client_sqlite = { version = "0.19", optional = true, features = ["orchard"] }
+# NU6.2 librustzcash train (zcash_primitives 0.28 / orchard 0.14 / halo2_gadgets 0.5) —
+# carries the Orchard zk-circuit soundness fix GHSA-ghc3-g8w4-whf9 / GHSA-jfw5-j458-pfv6
+# (NU6.2 activated mainnet block 3,364,600 on 2026-06-03). Matches zcash-android-sdk 2.5.2.
+zcash_client_backend = { version = "0.23", optional = true, features = ["orchard"] }
+zcash_client_sqlite = { version = "0.21", optional = true, features = ["orchard"] }
 rusqlite = { version = "0.37", optional = true }
-zcash_primitives = { version = "0.26", optional = true }
+zcash_primitives = { version = "0.28", optional = true }
 hex = { version = "0.4", optional = true }
 secrecy = { version = "0.8", optional = true }
-zcash_proofs = { version = "0.26", optional = true, default-features = false, features = ["local-prover", "multicore"] }
+zcash_proofs = { version = "0.28", optional = true, default-features = false, features = ["local-prover", "multicore"] }
 nonempty = { version = "0.11", optional = true }
 
 # gRPC dependencies for lightwalletd integration
-tonic = { version = "0.11", optional = true }
+tonic = { version = "0.11", features = ["tls", "tls-roots"], optional = true }
 prost = { version = "0.12", optional = true }
 prost-types = { version = "0.12", optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }

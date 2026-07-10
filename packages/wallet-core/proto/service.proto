@@ -48,6 +48,8 @@ message RawTransaction {
 
 message Empty {}
 
+// Upstream schema: https://github.com/zcash/lightwallet-protocol/blob/master/walletrpc/service.proto
+// Field numbers + types MUST match upstream exactly — names are local.
 message LightdInfo {
   string version = 1;
   string vendor = 2;
@@ -56,9 +58,17 @@ message LightdInfo {
   uint64 sapling_activation_height = 5;
   string consensus_branch_id = 6;
   uint64 block_height = 7;
-  uint64 estimated_height = 8;
-  string zcashd_build = 9;
-  string zcashd_subversion = 10;
+  string git_commit = 8;
+  string branch = 9;
+  string build_date = 10;
+  string build_user = 11;
+  uint64 estimated_height = 12;
+  string zcashd_build = 13;
+  string zcashd_subversion = 14;
+  string donation_address = 15;
+  string upgrade_name = 16;
+  uint64 upgrade_height = 17;
+  string lightwallet_protocol_version = 18;
 }
 
 // TreeState contains the Sapling and Orchard note commitment tree states

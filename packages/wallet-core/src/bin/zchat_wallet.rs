@@ -30,11 +30,17 @@ enum Command {
         birthday: Option<u64>,
     },
 
-    /// Import a wallet from a mnemonic seed phrase
+    /// Import a wallet from a mnemonic seed phrase.
+    /// Prefer `--from-stdin` — passing the mnemonic via --mnemonic leaks it through
+    /// `ps -ef` / `/proc/<pid>/cmdline` to every other process on the host.
     Import {
-        /// The 24-word BIP39 mnemonic seed phrase
-        #[arg(long)]
-        mnemonic: String,
+        /// The 24-word BIP39 mnemonic seed phrase (INSECURE — visible to ps;
+        /// use --from-stdin in production).
+        #[arg(long, conflicts_with = "from_stdin")]
+        mnemonic: Option<String>,
+        /// Read the mnemonic from stdin instead of argv.
+        #[arg(long, conflicts_with = "mnemonic")]
+        from_stdin: bool,
         /// Optional birthday height (defaults to current chain tip)
         #[arg(long)]
         birthday: Option<u64>,
@@ -73,6 +79,12 @@ enum Command {
     DebugSync,
     /// Debug command to show database schema
     DebugDb,
+    /// Truncate the wallet's scanned state back to a given height (chain-reorg recovery).
+    /// Wipes all notes/blocks above this height so the next sync re-scans from there.
+    TruncateTo {
+        /// Height to truncate to (inclusive — blocks above this height are removed)
+        height: u32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -88,7 +100,17 @@ fn main() -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("Failed to initialize wallet: {}", e))?;
             println!("{}", result);
         }
-        Command::Import { mnemonic, birthday } => {
+        Command::Import { mnemonic, from_stdin, birthday } => {
+            // Resolve the mnemonic: either argv (legacy, leaks via ps) or stdin (preferred).
+            let mnemonic = if from_stdin {
+                use std::io::Read;
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf)
+                    .map_err(|e| anyhow::anyhow!("Failed to read mnemonic from stdin: {}", e))?;
+                buf
+            } else {
+                mnemonic.ok_or_else(|| anyhow::anyhow!("Must supply --mnemonic or --from-stdin"))?
+            };
             // Write the mnemonic to the .mnemonic file so init can find it
             let mnemonic_file_path = format!("{}.mnemonic", db_path);
 
@@ -101,7 +123,24 @@ fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            // Write the provided mnemonic
+            // 0600 perms — mnemonic on disk is wallet-equivalent secret.
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                let mut f = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create(true)
+                    .truncate(true)
+                    .mode(0o600)
+                    .open(&mnemonic_file_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to write mnemonic file: {}", e))?;
+                f.write_all(mnemonic.trim().as_bytes())
+                    .map_err(|e| anyhow::anyhow!("Failed to write mnemonic file: {}", e))?;
+                f.sync_all()
+                    .map_err(|e| anyhow::anyhow!("Failed to flush mnemonic file: {}", e))?;
+            }
+            #[cfg(not(unix))]
             std::fs::write(&mnemonic_file_path, mnemonic.trim())
                 .map_err(|e| anyhow::anyhow!("Failed to write mnemonic file: {}", e))?;
 
@@ -194,9 +233,17 @@ fn main() -> anyhow::Result<()> {
             // Debug command to show database schema
             let db_info = wallet.debug_db()
                 .map_err(|e| anyhow::anyhow!("Failed to get database info: {}", e))?;
-            
+
             // Output as JSON (pretty print for readability)
             println!("{}", serde_json::to_string_pretty(&db_info).unwrap());
+        }
+        Command::TruncateTo { height } => {
+            let truncated_to = wallet.truncate_to_height(height)
+                .map_err(|e| anyhow::anyhow!("Failed to truncate wallet: {}", e))?;
+            let output = serde_json::json!({
+                "truncated_to_height": truncated_to
+            });
+            println!("{}", serde_json::to_string(&output).unwrap());
         }
     }
 

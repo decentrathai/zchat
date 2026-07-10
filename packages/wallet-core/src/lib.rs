@@ -28,13 +28,14 @@ use zcash_client_sqlite::wallet::init::init_wallet_db;
 use zcash_client_sqlite::util::SystemClock;
 #[cfg(feature = "native")]
 use zcash_protocol::consensus::MainNetwork as ProtocolMainNetwork;
-#[cfg(feature = "native")]
+// NOTE: the imports below come from the "always available (work in WASM)" crates declared in
+// Cargo.toml (zcash_keys, zcash_address, zip32, bip0039). They are NOT native-gated: the
+// client-side #[wasm_bindgen] functions (generate_mnemonic / derive_address_from_mnemonic /
+// validate_mnemonic) depend on them, so gating them behind "native" breaks the default WASM build.
 use zcash_keys::keys::UnifiedSpendingKey;
 #[cfg(feature = "native")]
 use zcash_address::unified::{Address, Encoding};
-#[cfg(feature = "native")]
 use zip32::AccountId;
-#[cfg(feature = "native")]
 use bip0039::{English, Mnemonic};
 // WalletRead and WalletWrite traits for database operations
 #[cfg(feature = "native")]
@@ -66,8 +67,11 @@ use tokio::runtime::Runtime;
 use zcash_protocol::memo::MemoBytes;
 #[cfg(feature = "native")]
 use zcash_protocol::value::Zatoshis;
+// UnifiedAddressRequest is needed by the WASM client function derive_address_from_mnemonic;
+// keep it ungated (zcash_keys is always-available). ReceiverRequirement is native-only.
+use zcash_keys::keys::UnifiedAddressRequest;
 #[cfg(feature = "native")]
-use zcash_keys::keys::{UnifiedAddressRequest, ReceiverRequirement};
+use zcash_keys::keys::ReceiverRequirement;
 #[cfg(feature = "native")]
 use zcash_protocol::TxId;
 #[cfg(feature = "native")]
@@ -76,8 +80,34 @@ use nonempty::NonEmpty;
 use std::path::Path;
 #[cfg(feature = "native")]
 use std::fs;
+#[cfg(all(feature = "native", unix))]
+use std::os::unix::fs::OpenOptionsExt;
 #[cfg(feature = "native")]
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Write a secret to disk with 0600 perms on Unix (owner read/write only).
+/// On non-Unix targets falls back to fs::write — caller is expected to set
+/// ACLs at deployment.
+#[cfg(feature = "native")]
+fn write_secret_file<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(contents.as_ref())?;
+        f.sync_all()?;
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    {
+        fs::write(path, contents)
+    }
+}
 #[cfg(feature = "native")]
 use hex;
 #[cfg(feature = "native")]
@@ -125,6 +155,33 @@ fn open_or_init_wallet_db<P: AsRef<Path>>(
     Ok(wallet_db)
 }
 
+/// Build a tonic Channel for lightwalletd. Accepts:
+///   - http://host:port  (plaintext)
+///   - https://host:port (TLS via system root certs)
+///   - host:port         (defaults to http://)
+/// TLS uses `tls-roots` from tonic so we don't bundle a CA cert.
+#[cfg(feature = "native")]
+async fn build_lwd_channel(url: &str) -> Result<Channel, String> {
+    let grpc_url = if url.starts_with("http://") || url.starts_with("https://") {
+        url.to_string()
+    } else {
+        format!("http://{}", url)
+    };
+    let endpoint = Channel::from_shared(grpc_url.clone())
+        .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?;
+    let endpoint = if grpc_url.starts_with("https://") {
+        endpoint
+            .tls_config(tonic::transport::ClientTlsConfig::new())
+            .map_err(|e| format!("TLS config error: {}", e))?
+    } else {
+        endpoint
+    };
+    endpoint
+        .connect()
+        .await
+        .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))
+}
+
 /// Fetches the tree state from lightwalletd at a given height.
 /// Returns the TreeState proto message from lightwalletd.
 #[cfg(feature = "native")]
@@ -135,16 +192,7 @@ async fn fetch_tree_state_async(
     use crate::cash::z::wallet::sdk::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
     use crate::cash::z::wallet::sdk::rpc::BlockId;
     
-    let grpc_url = if lightwalletd_url.starts_with("http://") {
-        lightwalletd_url.to_string()
-    } else {
-        format!("http://{}", lightwalletd_url)
-    };
-    
-    let channel = Channel::from_shared(grpc_url)
-        .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?
-        .connect()
-        .await
+    let channel = build_lwd_channel(lightwalletd_url).await
         .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
     
     let mut client = CompactTxStreamerClient::new(channel);
@@ -334,20 +382,21 @@ impl WalletCore {
 
                 let mnemonic_phrase = mnemonic.phrase().to_string();
 
-                // Store the mnemonic for backup phrase retrieval (human-readable)
-                fs::write(&mnemonic_file_path, &mnemonic_phrase)
+                // 0600 perms — anyone with file-read access has the wallet.
+                write_secret_file(&mnemonic_file_path, &mnemonic_phrase)
                     .map_err(|e| format!("Failed to store mnemonic: {:?}", e))?;
 
-                // Also store the derived seed for faster loading
-                fs::write(&seed_file_path, &seed)
+                write_secret_file(&seed_file_path, &seed)
                     .map_err(|e| format!("Failed to store seed: {:?}", e))?;
 
                 eprintln!("Generated new 24-word mnemonic phrase");
                 (seed, mnemonic_phrase)
             };
 
-            // Log mnemonic for user (will be shown in output)
-            eprintln!("Mnemonic phrase: {}", mnemonic_phrase);
+            // Never log the raw mnemonic. Callers fetch it via the `seed` subcommand
+            // which prints to stdout (which the caller can capture without it landing
+            // in journalctl / docker logs / supervisord stderr archives).
+            let _ = &mnemonic_phrase;
 
             // Step 5: Fetch tree state from lightwalletd to create proper AccountBirthday
             let rt = Runtime::new()
@@ -361,16 +410,7 @@ impl WalletCore {
                 let height = match birthday_height {
                     Some(h) => h,
                     None => {
-                        let grpc_url = if self.lightwalletd_url.starts_with("http://") {
-                            self.lightwalletd_url.clone()
-                        } else {
-                            format!("http://{}", self.lightwalletd_url)
-                        };
-                        
-                        let channel = Channel::from_shared(grpc_url)
-                            .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?
-                            .connect()
-                            .await
+                        let channel = build_lwd_channel(&self.lightwalletd_url).await
                             .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
                         
                         let mut client = CompactTxStreamerClient::new(channel);
@@ -927,17 +967,8 @@ impl WalletCore {
             .map_err(|e| format!("Failed to create tokio runtime: {:?}", e))?;
 
         let chain_tip_height = rt.block_on(async {
-            let grpc_url = if self.lightwalletd_url.starts_with("http://") {
-                self.lightwalletd_url.clone()
-            } else {
-                format!("http://{}", self.lightwalletd_url)
-            };
-
-            let channel = Channel::from_shared(grpc_url)
-                .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?
-                .connect()
-                .await
-                .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
+            let channel = build_lwd_channel(&self.lightwalletd_url).await
+                            .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
 
             use crate::cash::z::wallet::sdk::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
             use crate::cash::z::wallet::sdk::rpc::Empty;
@@ -1135,12 +1166,29 @@ impl WalletCore {
         
         Ok(BackendCompactTx {
             index: proto_tx.index,
-            hash: proto_tx.hash.clone(),
+            // CompactTx.hash was renamed to .txid in the NU6.2 client-backend (0.23) proto;
+            // vin/vout were added — default them (we only carry shielded spends/outputs/actions).
+            txid: proto_tx.hash.clone(),
             fee: proto_tx.fee,
             spends: backend_spends,
             outputs: backend_outputs,
             actions: backend_actions,
+            ..Default::default()
         })
+    }
+
+    /// Rewind the wallet's scanned state to `height`. Wipes notes/blocks above the cut so the
+    /// next sync re-scans from there. Used to recover from `PrevHashMismatch` after a chain
+    /// reorg — the watcher catches the error, calls this with current_tip - 10, then resumes.
+    #[cfg(feature = "native")]
+    pub fn truncate_to_height(&self, height: u32) -> Result<u32, String> {
+        let db_path = Path::new(&self.db_path);
+        let mut wallet_db = open_or_init_wallet_db(db_path)?;
+        let target = zcash_protocol::consensus::BlockHeight::from_u32(height);
+        let truncated = wallet_db.truncate_to_height(target)
+            .map_err(|e| format!("Failed to truncate wallet to {}: {:?}", height, e))?;
+        eprintln!("Truncated wallet to height {}", u32::from(truncated));
+        Ok(u32::from(truncated))
     }
 
     #[cfg(feature = "native")]
@@ -1182,18 +1230,7 @@ impl WalletCore {
 
         // Step 5: Connect to lightwalletd and sync blocks
         let synced_height = rt.block_on(async {
-            let grpc_url = if self.lightwalletd_url.starts_with("http://") {
-                self.lightwalletd_url.clone()
-            } else if self.lightwalletd_url.starts_with("https://") {
-                return Err("HTTPS/TLS not yet supported. Use http:// for now.".to_string());
-            } else {
-                format!("http://{}", self.lightwalletd_url)
-            };
-
-            let channel = Channel::from_shared(grpc_url)
-                .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?
-                .connect()
-                .await
+            let channel = build_lwd_channel(&self.lightwalletd_url).await
                 .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
 
             use crate::cash::z::wallet::sdk::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
@@ -1480,7 +1517,10 @@ impl WalletCore {
             };
 
             // Parse transaction
-            let tx = match Transaction::read(&tx_data[..], zcash_primitives::consensus::BranchId::Nu6) {
+            // NU6.2 is the current consensus epoch. For V5 (Orchard) transactions — which is
+            // what we read here for memo decryption — Transaction::read derives the branch id
+            // from the tx itself and ignores this hint; we pass Nu6_2 for correctness/clarity.
+            let tx = match Transaction::read(&tx_data[..], zcash_protocol::consensus::BranchId::Nu6_2) {
                 Ok(tx) => tx,
                 Err(e) => {
                     eprintln!("Warning: Could not parse tx {}: {:?}",
@@ -1515,8 +1555,9 @@ impl WalletCore {
                     }
 
                     let memo_str = String::from_utf8_lossy(memo_bytes.as_slice());
-                    eprintln!("Decrypted memo for note {}: {:?}", note_id,
-                        memo_str.chars().take(50).collect::<String>());
+                    // Do NOT log decrypted memo CONTENT — memos carry private message plaintext.
+                    // Length only, for diagnostics.
+                    eprintln!("Decrypted memo for note {} ({} chars)", note_id, memo_str.chars().count());
 
                     break;
                 }
@@ -1533,17 +1574,8 @@ impl WalletCore {
         use crate::cash::z::wallet::sdk::rpc::compact_tx_streamer_client::CompactTxStreamerClient;
         use crate::cash::z::wallet::sdk::rpc::TxFilter;
 
-        let grpc_url = if self.lightwalletd_url.starts_with("http://") {
-            self.lightwalletd_url.clone()
-        } else {
-            format!("http://{}", self.lightwalletd_url)
-        };
-
-        let channel = Channel::from_shared(grpc_url)
-            .map_err(|e| format!("Invalid lightwalletd URL: {}", e))?
-            .connect()
-            .await
-            .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
+        let channel = build_lwd_channel(&self.lightwalletd_url).await
+                            .map_err(|e| format!("Failed to connect to lightwalletd: {}", e))?;
 
         let mut client = CompactTxStreamerClient::new(channel);
 
@@ -1616,8 +1648,17 @@ impl WalletCore {
         // Step 5: Parse the recipient address
         // Convert the string address to a Zcash unified address
         // Address::decode returns (Network, Address) tuple
-        let (_net, recipient_address) = Address::decode(&to_address)
+        let (recipient_net, recipient_address) = Address::decode(&to_address)
             .map_err(|e| format!("Invalid recipient address: {:?}", e))?;
+        // This wallet is mainnet-only. The re-encode in Step 9 forces AddressNetwork::Main, so a
+        // testnet/regtest recipient would otherwise be silently coerced to mainnet and routed to
+        // the wrong network. Reject anything that isn't a mainnet address up front.
+        if recipient_net != zcash_protocol::consensus::NetworkType::Main {
+            return Err(format!(
+                "Recipient is not a mainnet Zcash address (parsed network: {:?})",
+                recipient_net
+            ));
+        }
 
         // Step 6: Construct the memo string with format: "ZMSGv2|<unix_timestamp>|<sender_address>|<text>"
         // ZMSGv2 includes sender's address so recipients can identify who sent the message
@@ -1660,7 +1701,7 @@ impl WalletCore {
         // The Address from zcash_address is a struct, not an enum
         use zcash_client_backend::address::UnifiedAddress as BackendUnifiedAddress;
         use zcash_client_backend::encoding::AddressCodec;
-        use zcash_address::Network as AddressNetwork;
+        use zcash_protocol::consensus::NetworkType as AddressNetwork;
         
         // recipient_address is already a unified::Address struct
         // Re-encode to string using zcash_address::Network
@@ -1674,11 +1715,11 @@ impl WalletCore {
 
         // Step 10: Create the transaction using proposal-based workflow
         // First, create the proposal
-        use zcash_primitives::transaction::components::amount::NonNegativeAmount;
         use std::num::NonZeroU32;
 
-        // Convert amount to NonNegativeAmount
-        let send_amount = NonNegativeAmount::from_u64(amount)
+        // Convert amount to Zatoshis (formerly NonNegativeAmount — moved to
+        // zcash_protocol::value in the NU6.2 train; imported at the top of this file).
+        let send_amount = Zatoshis::from_u64(amount)
             .map_err(|_| "Invalid amount".to_string())?;
 
         // Get the recipient address as zcash_client_backend::address::Address
@@ -2223,8 +2264,10 @@ impl WalletCore {
         let mut seed = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut seed);
 
-        // Step 4: Store the new seed in a file
-        fs::write(&seed_file_path, &seed)
+        // Step 4: Store the new seed in a file (0600 owner-only — anyone with read access has the
+        // wallet). Use the hardened helper, matching init_new_wallet_at_height (was a plain
+        // fs::write that created the seed world-readable under the process umask).
+        write_secret_file(&seed_file_path, &seed)
             .map_err(|e| format!("Failed to store new seed: {:?}", e))?;
 
         // Step 5: Create account ID 0 (the default account)
@@ -2482,9 +2525,15 @@ pub fn list_messages() -> JsValue {
     let wallet = WalletCore::new(LIGHTWALLETD_URL.to_string());
     
     // Step 2: Call the internal list_messages() method
-    // This scans all transactions, finds memos with "ZMSGv1|" format,
-    // parses them, and returns a Vec<Message>
-    match wallet.list_messages(None) {
+    // This scans all transactions, finds memos with "ZMSGv1|" format, parses them.
+    // The method signature differs by build: native takes an optional since-height and
+    // returns Vec<ChatMessage>; the WASM stub takes no args and returns Vec<Message>.
+    // Both element types are Serialize, so the JSON handling below is identical.
+    #[cfg(feature = "native")]
+    let messages_result = wallet.list_messages(None);
+    #[cfg(not(feature = "native"))]
+    let messages_result = wallet.list_messages();
+    match messages_result {
         Ok(messages) => {
             // Step 3: Serialize Vec<Message> to JSON
             // serde_json::to_string() converts our Rust structs to a JSON string
