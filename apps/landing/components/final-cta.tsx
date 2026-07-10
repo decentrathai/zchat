@@ -38,7 +38,7 @@ export function FinalCTA() {
                 size="lg"
                 className="rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_30px_var(--accent-primary-glow)]"
               >
-                Get Early Access
+                Download
               </Button>
               <Button
                 onClick={scrollToVideo}

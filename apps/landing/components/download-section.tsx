@@ -2,127 +2,63 @@
 
 import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Download, Smartphone, Check, ExternalLink, Key } from "lucide-react"
-
-type FormStep = "email" | "reason" | "success" | "already_registered"
-type CodeStep = "enter" | "downloading" | "error"
+import { Download, Smartphone, Check, ShieldCheck, Copy, ChevronDown, Bell } from "lucide-react"
+import {
+  APK_DOWNLOAD_URL,
+  GITHUB_RELEASES_URL,
+  APK_VERSION,
+  SIGNING_CERT_SHA256,
+  APKSIGNER_VERIFY_CMD,
+} from "@/lib/site"
 
 export function DownloadSection() {
-  // Whitelist form state
-  const [formStep, setFormStep] = useState<FormStep>("email")
+  // Optional (not required) beta-updates email box
   const [email, setEmail] = useState("")
-  const [reason, setReason] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState("")
-  const [showForm, setShowForm] = useState(false)
+  const [subscribed, setSubscribed] = useState(false)
 
-  // Download code state
-  const [showCodeForm, setShowCodeForm] = useState(false)
-  const [downloadCode, setDownloadCode] = useState("")
-  const [codeStep, setCodeStep] = useState<CodeStep>("enter")
-  const [codeError, setCodeError] = useState("")
-  const [isVerifying, setIsVerifying] = useState(false)
+  // "Verify this download" copy-to-clipboard feedback
+  const [copied, setCopied] = useState(false)
 
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  const handleCopyFingerprint = async () => {
+    try {
+      await navigator.clipboard.writeText(SIGNING_CERT_SHA256)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard may be unavailable; the value is still visible/selectable.
+    }
+  }
+
+  const handleNotifySubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
 
-    // Basic email validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(email)) {
       setError("Please enter a valid email address")
       return
     }
 
-    setFormStep("reason")
-  }
-
-  const handleReasonSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-
-    if (reason.trim().length < 10) {
-      setError("Please provide a more detailed reason (at least 10 characters)")
-      return
-    }
-
     setIsSubmitting(true)
-
     try {
       const response = await fetch("/api/whitelist/join", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ email, reason }),
+        headers: { "Content-Type": "application/json" },
+        // reason satisfies the backend's >=10 char requirement; not surfaced to the user.
+        body: JSON.stringify({ email, reason: "beta updates signup" }),
       })
-
       const data = await response.json()
-
       if (!response.ok) {
-        throw new Error(data.error || "Failed to join whitelist")
+        throw new Error(data.error || "Something went wrong. Please try again.")
       }
-
-      // Check if email was already registered
-      if (data.alreadyRegistered) {
-        setFormStep("already_registered")
-      } else {
-        setFormStep("success")
-      }
+      setSubscribed(true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong. Please try again.")
     } finally {
       setIsSubmitting(false)
     }
-  }
-
-  const handleCodeSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setCodeError("")
-
-    if (!downloadCode.trim()) {
-      setCodeError("Please enter your download code")
-      return
-    }
-
-    setIsVerifying(true)
-
-    try {
-      const response = await fetch("/api/download/verify-code", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ code: downloadCode.trim() }),
-      })
-
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || "Invalid download code")
-      }
-
-      // Validate download URL before redirect
-      if (!data.downloadUrl || typeof data.downloadUrl !== 'string') {
-        throw new Error('Invalid download URL received')
-      }
-
-      // downloadUrl from backend is like "/download/apk/<token>" — prefix with /api
-      setCodeStep("downloading")
-      window.location.href = `/api${data.downloadUrl}`
-    } catch (err: unknown) {
-      setCodeError(err instanceof Error ? err.message : "Failed to verify code. Please try again.")
-      setCodeStep("error")
-    } finally {
-      setIsVerifying(false)
-    }
-  }
-
-  const resetCodeForm = () => {
-    setShowCodeForm(false)
-    setDownloadCode("")
-    setCodeStep("enter")
-    setCodeError("")
   }
 
   return (
@@ -135,10 +71,10 @@ export function DownloadSection() {
           <div className="mb-4 flex items-center justify-center gap-3">
             <Download className="h-8 w-8 text-[var(--accent-primary)]" />
             <h2 className="font-[family-name:var(--font-display)] text-3xl font-bold text-[var(--text-primary)] lg:text-4xl">Download ZCHAT</h2>
-            <span className="rounded-lg bg-[var(--accent-primary)]/15 px-2.5 py-0.5 text-xs font-semibold text-[var(--accent-primary)] border border-[var(--accent-primary)]/30">v2.10.5</span>
+            <span className="rounded-lg bg-[var(--accent-primary)]/15 px-2.5 py-0.5 text-xs font-semibold text-[var(--accent-primary)] border border-[var(--accent-primary)]/30">v{APK_VERSION}</span>
           </div>
           <p className="mx-auto max-w-2xl text-[var(--text-secondary)]">
-            A messenger where every message is a Zcash shielded transaction. No sign-up required. Your messages live on the Zcash blockchain.
+            No email. No account. No waitlist. A direct, verifiable APK download — every message is a Zcash shielded transaction, and your messages live on the Zcash blockchain.
           </p>
         </div>
 
@@ -191,287 +127,134 @@ export function DownloadSection() {
               </p>
             </div>
 
-            {/* APK Download with Whitelist */}
+            {/* Direct APK Download */}
             <div className="space-y-4">
-              <h3 className="mb-4 text-xl font-semibold text-[var(--text-primary)]">Early Access (Android APK)</h3>
+              <h3 className="mb-4 text-xl font-semibold text-[var(--text-primary)]">Direct Download (Android APK)</h3>
 
               <div className="relative overflow-hidden rounded-lg border border-[var(--border-active)] bg-gradient-to-br from-[var(--accent-primary)]/5 to-[var(--accent-secondary)]/5 p-6">
                 <div className="absolute -right-10 -top-10 h-32 w-32 rounded-full bg-[var(--accent-primary)]/20 blur-[50px]" />
 
-                {/* Initial state - no forms shown */}
-                {!showForm && !showCodeForm ? (
-                  <div className="relative space-y-4">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-[var(--accent-primary)]/20">
-                        <Smartphone className="h-8 w-8 text-[var(--accent-primary)]" />
-                      </div>
-                      <div>
-                        <p className="font-semibold text-[var(--text-primary)]">Android APK</p>
-                        <p className="text-sm text-[var(--text-secondary)]">Direct download for testers</p>
-                      </div>
+                <div className="relative space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-lg bg-[var(--accent-primary)]/20">
+                      <Smartphone className="h-8 w-8 text-[var(--accent-primary)]" />
                     </div>
-
-                    <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
-                      Join our exclusive whitelist to get early access to ZCHAT. Limited spots available for beta testers.
-                    </p>
-
-                    <div className="space-y-3">
-                      <Button
-                        onClick={() => setShowForm(true)}
-                        size="lg"
-                        className="w-full rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_30px_var(--accent-primary-glow)]"
-                      >
-                        <Download className="mr-2 h-5 w-5" />
-                        Request Early Access
-                      </Button>
-
-                      <button
-                        onClick={() => setShowCodeForm(true)}
-                        className="flex w-full items-center justify-center gap-2 rounded-lg border border-[var(--border-active)] bg-transparent px-4 py-2.5 text-sm font-medium text-[var(--accent-primary)] transition-all hover:bg-[var(--accent-primary)]/10"
-                      >
-                        <Key className="h-4 w-4" />
-                        I have a download code
-                      </button>
+                    <div>
+                      <p className="font-semibold text-[var(--text-primary)]">Android APK</p>
+                      <p className="text-sm text-[var(--text-secondary)]">Signed release · direct download</p>
                     </div>
                   </div>
-                ) : showCodeForm ? (
-                  /* Download Code Form */
-                  <div className="relative">
-                    {codeStep === "enter" && (
-                      <form onSubmit={handleCodeSubmit} className="space-y-4">
-                        <div className="flex items-center gap-3 mb-4">
-                          <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-[var(--accent-primary)]/20">
-                            <Key className="h-6 w-6 text-[var(--accent-primary)]" />
-                          </div>
-                          <div>
-                            <p className="font-semibold text-[var(--text-primary)]">Enter Download Code</p>
-                            <p className="text-sm text-[var(--text-secondary)]">Received via email from us</p>
-                          </div>
-                        </div>
 
-                        <div>
-                          <input
-                            type="text"
-                            value={downloadCode}
-                            onChange={(e) => {
-                              const value = e.target.value.toUpperCase()
-                              if (/^[A-Z0-9]*$/.test(value)) {
-                                setDownloadCode(value)
-                              }
-                            }}
-                            placeholder="Enter your code (e.g., A1B2C3D4)"
-                            className="w-full rounded-lg border border-[var(--border-default)] bg-[var(--bg-input)] px-4 py-3 text-center text-lg font-[family-name:var(--font-mono)] tracking-widest text-[var(--text-primary)] uppercase placeholder-[var(--text-tertiary)] focus:border-[var(--border-active)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-                            maxLength={8}
-                            required
-                          />
-                        </div>
+                  <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+                    Download the signed APK straight from GitHub and sideload it. No email, no account, no waitlist.
+                  </p>
 
-                        {codeError && <p className="text-sm text-[var(--color-danger)]">{codeError}</p>}
+                  {/* Primary CTA — real anchor for a plain direct download */}
+                  <a
+                    href={APK_DOWNLOAD_URL}
+                    className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-[var(--accent-primary)] px-6 py-3 text-base font-semibold text-[var(--bg-base)] transition-all hover:shadow-[0_0_30px_var(--accent-primary-glow)]"
+                  >
+                    <Download className="h-5 w-5" />
+                    Download APK · v{APK_VERSION}
+                  </a>
 
-                        <Button
-                          type="submit"
-                          disabled={isVerifying}
-                          className="w-full rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_20px_var(--accent-primary-glow)] disabled:opacity-50"
-                        >
-                          {isVerifying ? "Verifying..." : "Download APK"}
-                        </Button>
+                  <p className="text-center text-sm text-[var(--text-tertiary)]">
+                    or{" "}
+                    <a
+                      href={GITHUB_RELEASES_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[var(--accent-primary)] hover:underline"
+                    >
+                      view all releases &amp; checksums on GitHub
+                    </a>
+                  </p>
 
+                  {/* Verify this download */}
+                  <details className="group rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)]/60 p-4">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium text-[var(--text-primary)]">
+                      <span className="flex items-center gap-2">
+                        <ShieldCheck className="h-4 w-4 text-[var(--accent-primary)]" />
+                        Verify this download
+                      </span>
+                      <ChevronDown className="h-4 w-4 text-[var(--text-tertiary)] transition-transform group-open:rotate-180" />
+                    </summary>
+
+                    <div className="mt-4 space-y-3">
+                      <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+                        This APK is signed with ZCHAT&apos;s own release key — it is never re-signed by any app store. Its permanent certificate fingerprint is:
+                      </p>
+
+                      <div className="flex items-start gap-2">
+                        <code className="flex-1 break-all rounded-lg bg-[var(--bg-input)] px-3 py-2 font-[family-name:var(--font-mono)] text-xs text-[var(--text-primary)]">
+                          {SIGNING_CERT_SHA256}
+                        </code>
                         <button
                           type="button"
-                          onClick={resetCodeForm}
-                          className="w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                          onClick={handleCopyFingerprint}
+                          aria-label="Copy fingerprint"
+                          className="shrink-0 rounded-lg border border-[var(--border-default)] p-2 text-[var(--text-secondary)] transition-colors hover:border-[var(--border-active)] hover:text-[var(--accent-primary)]"
                         >
-                          Cancel
-                        </button>
-                      </form>
-                    )}
-
-                    {codeStep === "downloading" && (
-                      <div className="space-y-4 text-center py-4">
-                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[var(--accent-primary)]/20">
-                          <Download className="h-8 w-8 text-[var(--accent-primary)] animate-bounce" />
-                        </div>
-                        <h4 className="text-xl font-semibold text-[var(--text-primary)]">
-                          Download Starting...
-                        </h4>
-                        <p className="text-[var(--text-secondary)]">
-                          Your APK download should begin automatically. If it doesn&apos;t start, check your browser&apos;s download settings.
-                        </p>
-                        <button
-                          onClick={resetCodeForm}
-                          className="text-sm text-[var(--accent-primary)] hover:text-[var(--accent-primary-dim)]"
-                        >
-                          Go back
+                          {copied ? <Check className="h-4 w-4 text-[var(--accent-success)]" /> : <Copy className="h-4 w-4" />}
                         </button>
                       </div>
-                    )}
 
-                    {codeStep === "error" && (
-                      <div className="space-y-4 text-center py-4">
-                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-danger)]/20">
-                          <span className="text-2xl text-[var(--color-danger)]">!</span>
-                        </div>
-                        <h4 className="text-xl font-semibold text-[var(--text-primary)]">
-                          Code Invalid
-                        </h4>
-                        <p className="text-[var(--text-secondary)]">{codeError}</p>
-                        <Button
-                          onClick={() => setCodeStep("enter")}
-                          className="rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] hover:shadow-[0_0_20px_var(--accent-primary-glow)]"
-                        >
-                          Try Again
-                        </Button>
-                        <button
-                          onClick={resetCodeForm}
-                          className="block w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  /* Whitelist Form */
-                  <div className="relative">
-                    {formStep === "email" && (
-                      <form onSubmit={handleEmailSubmit} className="space-y-4">
-                        <div>
-                          <label htmlFor="email" className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
-                            Enter your email
-                          </label>
-                          <input
-                            type="email"
-                            id="email"
-                            value={email}
-                            onChange={(e) => setEmail(e.target.value)}
-                            placeholder="your@email.com"
-                            className="w-full rounded-lg border border-[var(--border-default)] bg-[var(--bg-input)] px-4 py-3 text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:border-[var(--border-active)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-                            required
-                          />
-                        </div>
-                        {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
-                        <Button
-                          type="submit"
-                          className="w-full rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_20px_var(--accent-primary-glow)]"
-                        >
-                          Continue
-                        </Button>
-                        <button
-                          type="button"
-                          onClick={() => setShowForm(false)}
-                          className="w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                        >
-                          Cancel
-                        </button>
-                      </form>
-                    )}
-
-                    {formStep === "reason" && (
-                      <form onSubmit={handleReasonSubmit} className="space-y-4">
-                        <div>
-                          <label htmlFor="reason" className="mb-2 block text-sm font-medium text-[var(--text-primary)]">
-                            Why do you want to test this private messenger?
-                          </label>
-                          <textarea
-                            id="reason"
-                            value={reason}
-                            onChange={(e) => setReason(e.target.value)}
-                            placeholder="Tell us why privacy matters to you..."
-                            rows={4}
-                            className="w-full rounded-lg border border-[var(--border-default)] bg-[var(--bg-input)] px-4 py-3 text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:border-[var(--border-active)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
-                            required
-                          />
-                        </div>
-                        {error && <p className="text-sm text-[var(--color-danger)]">{error}</p>}
-                        <Button
-                          type="submit"
-                          disabled={isSubmitting}
-                          className="w-full rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_20px_var(--accent-primary-glow)] disabled:opacity-50"
-                        >
-                          {isSubmitting ? "Submitting..." : "Join Whitelist"}
-                        </Button>
-                        <button
-                          type="button"
-                          onClick={() => setFormStep("email")}
-                          className="w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                        >
-                          Back
-                        </button>
-                      </form>
-                    )}
-
-                    {formStep === "success" && (
-                      <div className="space-y-4 text-center">
-                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[var(--accent-success)]/20">
-                          <Check className="h-8 w-8 text-[var(--accent-success)]" />
-                        </div>
-                        <h4 className="text-xl font-semibold text-[var(--text-primary)]">
-                          Thanks for joining the whitelist!
-                        </h4>
-                        <p className="text-[var(--text-secondary)]">
-                          Keep an eye on our X account and you&apos;ll be the first to know when new testing slots are available.
-                        </p>
-                        <a
-                          href="https://x.com/zchat_app"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-2 rounded-lg bg-[var(--bg-elevated)] px-6 py-3 font-medium text-[var(--text-primary)] transition-all hover:bg-[var(--bg-input)]"
-                        >
-                          <svg viewBox="0 0 24 24" className="h-5 w-5" fill="currentColor">
-                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
-                          </svg>
-                          Follow @zchat_app
-                          <ExternalLink className="h-4 w-4" />
-                        </a>
-                      </div>
-                    )}
-
-                    {formStep === "already_registered" && (
-                      <div className="space-y-4 text-center">
-                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full bg-[var(--color-warning)]/20">
-                          <Key className="h-8 w-8 text-[var(--color-warning)]" />
-                        </div>
-                        <h4 className="text-xl font-semibold text-[var(--text-primary)]">
-                          You&apos;re already on the whitelist!
-                        </h4>
-                        <p className="text-[var(--text-secondary)]">
-                          This email is already registered. If you&apos;ve received a download code, use it below. Otherwise, wait for approval.
-                        </p>
-                        <div className="space-y-3 pt-2">
-                          <Button
-                            onClick={() => {
-                              setShowForm(false)
-                              setShowCodeForm(true)
-                              setFormStep("email")
-                              setEmail("")
-                              setReason("")
-                            }}
-                            className="w-full rounded-lg bg-[var(--accent-primary)] text-[var(--bg-base)] font-semibold transition-all hover:shadow-[0_0_20px_var(--accent-primary-glow)]"
-                          >
-                            <Key className="mr-2 h-4 w-4" />
-                            Enter Download Code
-                          </Button>
-                          <button
-                            onClick={() => {
-                              setShowForm(false)
-                              setFormStep("email")
-                              setEmail("")
-                              setReason("")
-                            }}
-                            className="w-full text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
-                          >
-                            Go Back
-                          </button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
+                      <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+                        Verify it yourself:
+                      </p>
+                      <code className="block break-all rounded-lg bg-[var(--bg-input)] px-3 py-2 font-[family-name:var(--font-mono)] text-xs text-[var(--text-primary)]">
+                        {APKSIGNER_VERIFY_CMD}
+                      </code>
+                      <p className="text-sm leading-relaxed text-[var(--text-secondary)]">
+                        Confirm the &quot;Signer #1 certificate SHA-256 digest&quot; matches the value above — it never changes between versions.
+                      </p>
+                    </div>
+                  </details>
+                </div>
               </div>
 
-              <p className="text-center text-sm text-[var(--text-tertiary)]">
-                By joining, you agree to receive updates about ZCHAT
-              </p>
+              {/* Optional beta-updates email box (subordinate to the download) */}
+              <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)]/40 p-4">
+                {subscribed ? (
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--accent-success)]/20">
+                      <Check className="h-5 w-5 text-[var(--accent-success)]" />
+                    </div>
+                    <p className="text-sm text-[var(--text-secondary)]">
+                      You&apos;re on the list — we&apos;ll email you when a new build ships.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mb-2 flex items-center gap-2">
+                      <Bell className="h-4 w-4 text-[var(--text-tertiary)]" />
+                      <p className="text-sm font-medium text-[var(--text-primary)]">Get beta updates (optional)</p>
+                    </div>
+                    <p className="mb-3 text-xs text-[var(--text-tertiary)]">
+                      Not required to download — just an optional heads-up when new builds land.
+                    </p>
+                    <form onSubmit={handleNotifySubmit} className="flex flex-col gap-2 sm:flex-row">
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="your@email.com"
+                        className="w-full flex-1 rounded-lg border border-[var(--border-default)] bg-[var(--bg-input)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:border-[var(--border-active)] focus:outline-none focus:ring-1 focus:ring-[var(--accent-primary)]"
+                        required
+                      />
+                      <Button
+                        type="submit"
+                        disabled={isSubmitting}
+                        variant="outline"
+                        className="shrink-0 rounded-lg border-[var(--border-active)] text-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/10 disabled:opacity-50"
+                      >
+                        {isSubmitting ? "Adding..." : "Notify me"}
+                      </Button>
+                    </form>
+                    {error && <p className="mt-2 text-xs text-[var(--color-danger)]">{error}</p>}
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>

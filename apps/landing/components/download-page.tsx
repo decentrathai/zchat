@@ -7,110 +7,63 @@ import {
   Smartphone,
   Monitor,
   Check,
-  Key,
   Shield,
+  ShieldCheck,
   Clock,
   FileText,
   ExternalLink,
+  Copy,
+  Bell,
 } from "lucide-react"
-
-type CodeStep = "enter" | "downloading" | "error"
+import {
+  APK_DOWNLOAD_URL,
+  GITHUB_RELEASES_URL,
+  APK_VERSION,
+  SIGNING_CERT_SHA256,
+  APKSIGNER_VERIFY_CMD,
+} from "@/lib/site"
 
 export function DownloadPage() {
-  const [downloadCode, setDownloadCode] = useState("")
-  const [codeStep, setCodeStep] = useState<CodeStep>("enter")
-  const [codeError, setCodeError] = useState("")
-  const [isVerifying, setIsVerifying] = useState(false)
-
-  // Whitelist form
+  // Optional (not required) beta-updates email box
   const [email, setEmail] = useState("")
-  const [reason, setReason] = useState("")
-  const [formStep, setFormStep] = useState<"email" | "reason" | "success" | "already_registered">("email")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState("")
-  const [showWhitelistForm, setShowWhitelistForm] = useState(false)
+  const [subscribed, setSubscribed] = useState(false)
 
-  const handleCodeSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setCodeError("")
+  // Fingerprint copy feedback
+  const [copied, setCopied] = useState(false)
 
-    if (!downloadCode.trim()) {
-      setCodeError("Please enter your download code")
-      return
-    }
-
-    setIsVerifying(true)
-
+  const handleCopyFingerprint = async () => {
     try {
-      let response: Response
-      try {
-        response = await fetch("/api/download/verify-code", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code: downloadCode.trim() }),
-        })
-      } catch {
-        throw new Error("Cannot reach the server. Please check your internet connection and try again.")
-      }
-
-      let data: Record<string, unknown>
-      try {
-        data = await response.json()
-      } catch {
-        throw new Error("Server returned an unexpected response. Please try again.")
-      }
-
-      if (!response.ok) {
-        throw new Error((data.error as string) || "Invalid download code")
-      }
-
-      if (!data.downloadUrl || typeof data.downloadUrl !== "string") {
-        throw new Error("Invalid download URL received")
-      }
-
-      // downloadUrl from backend is like "/download/apk/<token>" — prefix with /api
-      setCodeStep("downloading")
-      window.location.href = `/api${data.downloadUrl}`
-    } catch (err: unknown) {
-      setCodeError(err instanceof Error ? err.message : "Failed to verify code.")
-      setCodeStep("error")
-    } finally {
-      setIsVerifying(false)
+      await navigator.clipboard.writeText(SIGNING_CERT_SHA256)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard may be unavailable; the value is still visible/selectable.
     }
   }
 
-  const handleEmailSubmit = (e: React.FormEvent) => {
+  const handleNotifySubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
+
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
     if (!emailRegex.test(email)) {
       setError("Please enter a valid email address")
       return
     }
-    setFormStep("reason")
-  }
 
-  const handleReasonSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setError("")
-    if (reason.trim().length < 10) {
-      setError("Please provide a more detailed reason (at least 10 characters)")
-      return
-    }
     setIsSubmitting(true)
     try {
       const response = await fetch("/api/whitelist/join", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, reason }),
+        // reason satisfies the backend's >=10 char requirement; not surfaced to the user.
+        body: JSON.stringify({ email, reason: "beta updates signup" }),
       })
       const data = await response.json()
-      if (!response.ok) throw new Error(data.error || "Failed to join whitelist")
-      if (data.alreadyRegistered) {
-        setFormStep("already_registered")
-      } else {
-        setFormStep("success")
-      }
+      if (!response.ok) throw new Error(data.error || "Something went wrong.")
+      setSubscribed(true)
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Something went wrong.")
     } finally {
@@ -121,7 +74,7 @@ export function DownloadPage() {
   const platforms = [
     {
       name: "Android (APK)",
-      status: "Private Beta",
+      status: "Direct Download",
       statusColor: "text-cyan-400",
       icon: Smartphone,
       available: true,
@@ -160,8 +113,8 @@ export function DownloadPage() {
             <h1 className="text-3xl font-bold text-white lg:text-4xl">Download ZChat</h1>
           </div>
           <p className="mx-auto max-w-2xl text-gray-300">
-            A messenger where every message is a Zcash shielded transaction. Currently available as Android APK in
-            private beta.
+            A messenger where every message is a Zcash shielded transaction. No email, no account, no waitlist — download
+            the signed Android APK directly and verify it yourself.
           </p>
         </div>
 
@@ -208,167 +161,72 @@ export function DownloadPage() {
 
           {/* Download APK Section */}
           <div className="rounded-2xl border border-cyan-500/30 bg-gradient-to-br from-cyan-500/10 to-fuchsia-500/5 p-8">
-            <h2 className="mb-6 text-xl font-semibold text-white">Android APK Download</h2>
+            <h2 className="mb-2 text-xl font-semibold text-white">Android APK Download</h2>
+            <p className="mb-6 text-sm text-gray-300">
+              Direct download of the latest signed release — v{APK_VERSION}. No email, account, or waitlist required.
+            </p>
 
-            <div className="grid gap-8 md:grid-cols-2">
-              {/* Enter Download Code */}
-              <div>
-                <h3 className="mb-3 flex items-center gap-2 text-lg font-medium text-white">
-                  <Key className="h-5 w-5 text-cyan-400" />
-                  Have a download code?
-                </h3>
+            <div className="flex flex-col items-start gap-4">
+              {/* Primary CTA — real anchor for a plain direct download */}
+              <a
+                href={APK_DOWNLOAD_URL}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-cyan-500 px-6 py-3 text-base font-semibold text-black transition-all hover:bg-cyan-400 sm:w-auto"
+              >
+                <Download className="h-5 w-5" />
+                Download APK · v{APK_VERSION}
+              </a>
+              <p className="text-sm text-gray-400">
+                or{" "}
+                <a
+                  href={GITHUB_RELEASES_URL}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-cyan-400 hover:text-cyan-300"
+                >
+                  view all releases &amp; checksums on GitHub
+                </a>
+              </p>
+            </div>
 
-                {codeStep === "enter" && (
-                  <form onSubmit={handleCodeSubmit} className="space-y-3">
-                    <input
-                      type="text"
-                      value={downloadCode}
-                      onChange={(e) => {
-                        const value = e.target.value.toUpperCase()
-                        if (/^[A-Z0-9]*$/.test(value)) setDownloadCode(value)
-                      }}
-                      placeholder="Enter code (e.g., A1B2C3D4)"
-                      className="w-full rounded-lg border border-cyan-500/30 bg-gray-900/50 px-4 py-3 text-center font-mono text-lg tracking-widest text-white uppercase placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                      maxLength={8}
-                      required
-                    />
-                    {codeError && <p className="text-sm text-red-400">{codeError}</p>}
-                    <Button
-                      type="submit"
-                      disabled={isVerifying}
-                      className="w-full bg-cyan-500 text-black transition-all hover:bg-cyan-400 disabled:opacity-50"
-                    >
-                      {isVerifying ? "Verifying..." : "Download APK"}
-                    </Button>
-                  </form>
-                )}
-
-                {codeStep === "downloading" && (
-                  <div className="space-y-3 text-center py-4">
-                    <Download className="mx-auto h-8 w-8 animate-bounce text-cyan-400" />
-                    <p className="text-white font-medium">Download starting...</p>
-                    <button
-                      onClick={() => {
-                        setCodeStep("enter")
-                        setDownloadCode("")
-                      }}
-                      className="text-sm text-cyan-400 hover:text-cyan-300"
-                    >
-                      Download again
-                    </button>
+            {/* Optional beta-updates email box */}
+            <div className="mt-6 rounded-xl border border-gray-700/50 bg-gray-900/30 p-5">
+              {subscribed ? (
+                <div className="flex items-center gap-3">
+                  <Check className="h-6 w-6 shrink-0 text-green-400" />
+                  <p className="text-sm text-gray-300">
+                    You&apos;re on the list — we&apos;ll email you when a new build ships.
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="mb-2 flex items-center gap-2">
+                    <Bell className="h-4 w-4 text-gray-400" />
+                    <h3 className="text-sm font-medium text-white">Get beta updates (optional)</h3>
                   </div>
-                )}
-
-                {codeStep === "error" && (
-                  <div className="space-y-3 text-center py-4">
-                    <p className="text-red-400">{codeError}</p>
-                    <Button
-                      onClick={() => setCodeStep("enter")}
-                      className="bg-cyan-500 text-black hover:bg-cyan-400"
-                    >
-                      Try Again
-                    </Button>
-                  </div>
-                )}
-              </div>
-
-              {/* Request Access */}
-              <div>
-                <h3 className="mb-3 flex items-center gap-2 text-lg font-medium text-white">
-                  <Shield className="h-5 w-5 text-cyan-400" />
-                  Request early access
-                </h3>
-
-                {!showWhitelistForm ? (
-                  <div className="space-y-3">
-                    <p className="text-sm text-gray-300">
-                      Join the whitelist to get a download code. Limited spots available for beta testers.
-                    </p>
-                    <Button
-                      onClick={() => setShowWhitelistForm(true)}
-                      variant="outline"
-                      className="w-full border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10"
-                    >
-                      Request Early Access
-                    </Button>
-                  </div>
-                ) : formStep === "email" ? (
-                  <form onSubmit={handleEmailSubmit} className="space-y-3">
+                  <p className="mb-3 text-xs text-gray-400">
+                    Not required to download — just an optional heads-up when new builds land.
+                  </p>
+                  <form onSubmit={handleNotifySubmit} className="flex flex-col gap-2 sm:flex-row">
                     <input
                       type="email"
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="your@email.com"
-                      className="w-full rounded-lg border border-cyan-500/30 bg-gray-900/50 px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
+                      className="w-full flex-1 rounded-lg border border-cyan-500/30 bg-gray-900/50 px-4 py-2.5 text-sm text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
                       required
                     />
-                    {error && <p className="text-sm text-red-400">{error}</p>}
-                    <Button type="submit" className="w-full bg-cyan-500 text-black hover:bg-cyan-400">
-                      Continue
-                    </Button>
-                    <button
-                      type="button"
-                      onClick={() => setShowWhitelistForm(false)}
-                      className="w-full text-sm text-gray-400 hover:text-white"
-                    >
-                      Cancel
-                    </button>
-                  </form>
-                ) : formStep === "reason" ? (
-                  <form onSubmit={handleReasonSubmit} className="space-y-3">
-                    <label htmlFor="dl-reason" className="block text-sm text-gray-300">
-                      Why do you want to test this private messenger?
-                    </label>
-                    <textarea
-                      id="dl-reason"
-                      value={reason}
-                      onChange={(e) => setReason(e.target.value)}
-                      placeholder="Tell us why privacy matters to you..."
-                      rows={3}
-                      className="w-full rounded-lg border border-cyan-500/30 bg-gray-900/50 px-4 py-3 text-white placeholder-gray-500 focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500"
-                      required
-                    />
-                    {error && <p className="text-sm text-red-400">{error}</p>}
                     <Button
                       type="submit"
                       disabled={isSubmitting}
-                      className="w-full bg-cyan-500 text-black hover:bg-cyan-400 disabled:opacity-50"
+                      variant="outline"
+                      className="shrink-0 border-cyan-500/50 text-cyan-300 hover:bg-cyan-500/10 disabled:opacity-50"
                     >
-                      {isSubmitting ? "Submitting..." : "Join Whitelist"}
+                      {isSubmitting ? "Adding..." : "Notify me"}
                     </Button>
-                    <button
-                      type="button"
-                      onClick={() => setFormStep("email")}
-                      className="w-full text-sm text-gray-400 hover:text-white"
-                    >
-                      Back
-                    </button>
                   </form>
-                ) : formStep === "success" ? (
-                  <div className="space-y-3 text-center py-4">
-                    <Check className="mx-auto h-8 w-8 text-green-400" />
-                    <p className="font-medium text-white">You&apos;re on the whitelist!</p>
-                    <p className="text-sm text-gray-300">
-                      Follow{" "}
-                      <a
-                        href="https://x.com/zchat_app"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-cyan-400 hover:text-cyan-300"
-                      >
-                        @zchat_app
-                      </a>{" "}
-                      for updates.
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-3 text-center py-4">
-                    <Key className="mx-auto h-8 w-8 text-yellow-400" />
-                    <p className="font-medium text-white">Already registered!</p>
-                    <p className="text-sm text-gray-300">Check your email for a download code, or wait for approval.</p>
-                  </div>
-                )}
-              </div>
+                  {error && <p className="mt-2 text-xs text-red-400">{error}</p>}
+                </>
+              )}
             </div>
           </div>
 
@@ -381,19 +239,49 @@ export function DownloadPage() {
                   <FileText className="h-4 w-4 text-cyan-400" />
                   APK Checksum (SHA-256)
                 </h3>
-                <div className="rounded-lg bg-gray-900/50 p-3">
-                  <code className="break-all text-xs text-gray-400">[TBD — checksum published with each release]</code>
-                </div>
+                <p className="text-sm text-gray-300">
+                  Each release publishes a per-build SHA-256 checksum alongside the APK. Compare it against your download
+                  on the{" "}
+                  <a
+                    href={GITHUB_RELEASES_URL}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-cyan-400 hover:text-cyan-300"
+                  >
+                    GitHub release page
+                  </a>
+                  .
+                </p>
               </div>
               <div>
                 <h3 className="mb-2 flex items-center gap-2 font-medium text-white">
                   <Shield className="h-4 w-4 text-cyan-400" />
                   Signing Key
                 </h3>
-                <p className="text-sm text-gray-300">
-                  APKs are signed with the ZChat debug key during beta. Production signing key will be published when the
-                  app reaches stable release.
+                <p className="mb-3 text-sm text-gray-300">
+                  Every APK is signed with ZChat&apos;s dedicated release key — never re-signed by any app store. Its
+                  permanent certificate fingerprint (unchanged between versions) is:
                 </p>
+                <div className="mb-3 flex items-start gap-2">
+                  <code className="flex-1 break-all rounded-lg bg-gray-900/50 p-3 font-mono text-xs text-gray-300">
+                    {SIGNING_CERT_SHA256}
+                  </code>
+                  <button
+                    type="button"
+                    onClick={handleCopyFingerprint}
+                    aria-label="Copy fingerprint"
+                    className="shrink-0 rounded-lg border border-cyan-500/30 p-2 text-gray-400 transition-colors hover:border-cyan-500 hover:text-cyan-300"
+                  >
+                    {copied ? <Check className="h-4 w-4 text-green-400" /> : <Copy className="h-4 w-4" />}
+                  </button>
+                </div>
+                <p className="mb-2 flex items-center gap-2 text-sm text-gray-300">
+                  <ShieldCheck className="h-4 w-4 text-cyan-400" />
+                  Verify it yourself:
+                </p>
+                <code className="block break-all rounded-lg bg-gray-900/50 p-3 font-mono text-xs text-gray-300">
+                  {APKSIGNER_VERIFY_CMD}
+                </code>
               </div>
             </div>
           </div>
@@ -407,7 +295,7 @@ export function DownloadPage() {
             <div className="space-y-4">
               <div className="rounded-lg border border-gray-700/50 p-4">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="font-medium text-white">v2.10.5</span>
+                  <span className="font-medium text-white">v{APK_VERSION}</span>
                   <span className="text-sm text-gray-400">April 2026</span>
                 </div>
                 <ul className="space-y-1 text-sm text-gray-300">

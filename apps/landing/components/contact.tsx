@@ -6,7 +6,7 @@ import { SiX } from "@icons-pack/react-simple-icons"
 import Image from "next/image"
 
 const ZCASH_ADDRESS = "u1xcdd38s00czn0vn0nrpe2cwa8cutxw8y8m0lzgg627qap777zlzgsww7e2aqryrkuy2dvq4ug3m42a8xhe623a29pyrnguk5s3hcdfag39e05uyy3z6lgvxpqtufsp2er9yxyrc2np8p3wywk7quv5cgrq3t5qejeupm0re5nu6cm7al"
-const EVM_ADDRESS = "0xcf1a9dE438996Dc8A6640B8f74d8D90faA4E8c2C"
+const EVM_ADDRESS = "0xb9828C08508Ba60a897A19B58A87fe40E28BB216"
 
 function copyToClipboard(text: string): void {
   if (navigator.clipboard) {

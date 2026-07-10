@@ -37,9 +37,13 @@ export default function AdminPage() {
   const [approveModal, setApproveModal] = useState<WhitelistEntry | null>(null)
   const [customMessage, setCustomMessage] = useState("")
 
-  // Check for existing session
+  // Check for existing session. We use sessionStorage (not localStorage) so the
+  // secret never persists across tab close / browser restart — narrows the XSS
+  // blast radius from "forever" to "current tab only". Any historical
+  // localStorage value gets wiped on mount.
   useEffect(() => {
-    const stored = localStorage.getItem("zchat_admin_secret")
+    try { localStorage.removeItem("zchat_admin_secret") } catch { /* ignore */ }
+    const stored = sessionStorage.getItem("zchat_admin_secret")
     if (stored) {
       setAdminSecret(stored)
       setIsLoggedIn(true)
@@ -66,7 +70,7 @@ export default function AdminPage() {
       })
 
       if (response.ok) {
-        localStorage.setItem("zchat_admin_secret", inputSecret)
+        sessionStorage.setItem("zchat_admin_secret", inputSecret)
         setAdminSecret(inputSecret)
         setIsLoggedIn(true)
       } else {
@@ -78,7 +82,8 @@ export default function AdminPage() {
   }
 
   const handleLogout = () => {
-    localStorage.removeItem("zchat_admin_secret")
+    sessionStorage.removeItem("zchat_admin_secret")
+    try { localStorage.removeItem("zchat_admin_secret") } catch { /* legacy cleanup */ }
     setAdminSecret("")
     setIsLoggedIn(false)
     setEntries([])
@@ -301,6 +306,9 @@ export default function AdminPage() {
               <LogIn className="w-4 h-4 mr-2" />
               Login
             </Button>
+            <p className="text-xs text-gray-500 text-center">
+              Session expires on tab close. Do not log in on shared machines.
+            </p>
           </form>
         </div>
       </main>

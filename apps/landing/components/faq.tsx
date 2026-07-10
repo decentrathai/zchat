@@ -54,7 +54,7 @@ const faqSections: FAQSection[] = [
       {
         question: "How do I get ZChat?",
         answer:
-          "ZChat is currently in Android private beta. You can request early access on our download page. Once approved, you\u2019ll receive a download code via email to download the APK directly.",
+          "Download the signed Android APK directly from our download page (or from GitHub releases) \u2014 no email, account, or waitlist required. Before installing, verify the signature fingerprint with apksigner (it never changes between versions), then sideload the APK on your Android device.",
       },
       {
         question: "Do I need a phone number or email to use ZChat?",

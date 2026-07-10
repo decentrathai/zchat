@@ -183,3 +183,15 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* Tailwind v4 removed the default `cursor: pointer` on buttons (v3 added it via
+   Preflight). Restore the expected hand cursor on interactive elements so
+   clickable buttons/role=button/labels don't show the plain arrow. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled),
+  label[for],
+  summary {
+    cursor: pointer;
+  }
+}
