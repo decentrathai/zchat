@@ -1,0 +1,17 @@
+{
+  "name": "ai-topup-watcher",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "ts-node-dev --respawn --transpile-only src/watcher.ts",
+    "start": "ts-node src/watcher.ts",
+    "build": "tsc",
+    "once": "ts-node src/watcher.ts --once"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.1",
+    "ts-node": "^10.9.2",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.9.3"
+  }
+}
