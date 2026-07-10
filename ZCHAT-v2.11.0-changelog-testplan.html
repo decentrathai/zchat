@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ZCHAT v2.11.0 — Change Report & Test Plan (last 2 weeks)</title>
+<style>
+  :root{
+    --bg:#0a0e14; --bg2:#0f1622; --card:#121b2b; --card2:#162133;
+    --line:#1f2d44; --txt:#cdd9ec; --dim:#8294b0; --cyan:#22d3ee; --mag:#f472d0;
+    --grn:#34d399; --amb:#fbbf24; --red:#f87171; --vio:#a78bfa;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:linear-gradient(180deg,#070a10,#0a0e14 240px);color:var(--txt);
+    font-family:"Rajdhani","Segoe UI",system-ui,sans-serif;line-height:1.5;font-size:15.5px}
+  code,.mono{font-family:"JetBrains Mono",ui-monospace,Consolas,monospace;font-size:.86em}
+  a{color:var(--cyan);text-decoration:none}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 22px 90px}
+  header.hero{padding:46px 0 26px;border-bottom:1px solid var(--line);margin-bottom:8px}
+  .badge{display:inline-block;font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    padding:3px 10px;border-radius:4px;border:1px solid var(--line);color:var(--dim)}
+  h1{font-size:40px;margin:14px 0 6px;letter-spacing:.01em;
+    background:linear-gradient(90deg,var(--cyan),var(--mag));-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{color:var(--dim);font-size:16px;max-width:760px}
+  .glow{text-shadow:0 0 18px rgba(34,211,238,.35)}
+  /* dashboard */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin:26px 0}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;position:relative;overflow:hidden}
+  .stat::after{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--cyan)}
+  .stat.m::after{background:var(--mag)} .stat.g::after{background:var(--grn)} .stat.v::after{background:var(--vio)}
+  .stat b{display:block;font-size:30px;line-height:1.1} .stat span{color:var(--dim);font-size:12.5px;text-transform:uppercase;letter-spacing:.08em}
+  /* layout */
+  .toc{position:sticky;top:0;background:rgba(10,14,20,.92);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:10px 0;margin:18px 0 30px;z-index:5;font-size:13.5px}
+  .toc a{margin-right:16px;color:var(--dim)} .toc a:hover{color:var(--cyan)}
+  section{margin:44px 0}
+  h2{font-size:24px;border-left:3px solid var(--cyan);padding-left:12px;margin:0 0 6px}
+  h2.m{border-color:var(--mag)} h2.g{border-color:var(--grn)} h2.v{border-color:var(--vio)} h2.a{border-color:var(--amb)}
+  .secnote{color:var(--dim);margin:0 0 18px;padding-left:15px;font-size:14px}
+  /* cards */
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:16px 0;box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+  .card h3{margin:0 0 4px;font-size:18.5px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .tag{font-size:10.5px;letter-spacing:.08em;padding:2px 8px;border-radius:20px;font-weight:600;text-transform:uppercase}
+  .t-crit{background:rgba(248,113,113,.13);color:var(--red);border:1px solid rgba(248,113,113,.4)}
+  .t-sec{background:rgba(167,139,250,.13);color:var(--vio);border:1px solid rgba(167,139,250,.4)}
+  .t-fix{background:rgba(52,211,153,.12);color:var(--grn);border:1px solid rgba(52,211,153,.4)}
+  .t-feat{background:rgba(34,211,238,.12);color:var(--cyan);border:1px solid rgba(34,211,238,.4)}
+  .t-ux{background:rgba(244,114,208,.12);color:var(--mag);border:1px solid rgba(244,114,208,.4)}
+  .t-perf{background:rgba(251,191,36,.12);color:var(--amb);border:1px solid rgba(251,191,36,.4)}
+  .id{color:var(--dim);font-family:"JetBrains Mono",monospace;font-size:13px}
+  .row{display:grid;grid-template-columns:1fr;gap:0}
+  .kv{margin:10px 0 0} .kv .k{color:var(--cyan);font-size:11px;text-transform:uppercase;letter-spacing:.1em;display:block;margin-bottom:2px}
+  .kv.why .k{color:var(--mag)} .kv.fix .k{color:var(--grn)}
+  .commit{color:var(--dim);font-size:12px;font-family:"JetBrains Mono",monospace}
+  /* test cases */
+  .tc{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px}
+  .tc h4{margin:0 0 8px;font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--amb)}
+  table.t{width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:14px}
+  table.t td{vertical-align:top;padding:6px 10px;border:1px solid var(--line)}
+  table.t td.lbl{width:110px;color:var(--dim);background:var(--bg2);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+  ol.steps{margin:4px 0;padding-left:20px} ol.steps li{margin:3px 0}
+  .exp{color:var(--grn)}
+  /* svg figures */
+  figure{margin:18px 0;background:var(--bg2);border:1px solid var(--line);border-radius:12px;padding:18px;text-align:center}
+  figcaption{color:var(--dim);font-size:13px;margin-top:10px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.two{grid-template-columns:1fr}}
+  .note{background:rgba(34,211,238,.06);border:1px solid rgba(34,211,238,.25);border-radius:8px;padding:12px 15px;color:var(--dim);font-size:13.5px;margin:14px 0}
+  footer{margin-top:60px;border-top:1px solid var(--line);padding-top:20px;color:var(--dim);font-size:13px}
+  .pill{display:inline-block;background:var(--card2);border:1px solid var(--line);border-radius:20px;padding:3px 12px;margin:3px 4px 0 0;font-size:12.5px;font-family:"JetBrains Mono",monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <span class="badge">ZCHAT · Privacy messenger on Zcash</span>
+  <h1 class="glow">v2.11.0 — Change Report &amp; Test Plan</h1>
+  <p class="sub">Everything changed, fixed, and hardened in the two weeks to <b>2026-06-16</b> — grouped by theme, each with concrete test cases. Build <b>v2.11.0 / versionCode 78</b> (commit <span class="mono">f560245dc</span>), installed on Honor + Seeker.</p>
+  <div class="stats">
+    <div class="stat"><b>35+</b><span>Changes shipped</span></div>
+    <div class="stat m"><b>13</b><span>Commits (2 wks)</span></div>
+    <div class="stat g"><b>87</b><span>JVM tests green</span></div>
+    <div class="stat v"><b>6</b><span>CRITICAL fixed</span></div>
+    <div class="stat"><b>3</b><span>Transport modes</span></div>
+  </div>
+</header>
+
+<nav class="toc">
+  <a href="#groups">① Group messaging</a>
+  <a href="#tunnel">② Tunnel / NOSTR / Calls</a>
+  <a href="#sec">③ Security hardening</a>
+  <a href="#perf">④ Performance (StrictMode)</a>
+  <a href="#ux">⑤ UX / Onboarding</a>
+  <a href="#ai">⑥ AI / Backend</a>
+  <a href="#crit">⑦ /criticize hardening</a>
+</nav>
+
+<!-- ============ ARCHITECTURE PRIMER ============ -->
+<section>
+  <h2 class="v">Architecture primer</h2>
+  <p class="secnote">Most fixes touch one of three transport modes or the group sub-protocol. These diagrams ground the test cases below.</p>
+  <div class="two">
+    <figure>
+      <svg viewBox="0 0 360 220" width="100%" height="220" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace" font-size="11">
+        <rect x="0" y="0" width="360" height="220" fill="none"/>
+        <rect x="14" y="20" width="100" height="58" rx="8" fill="#16243a" stroke="#22d3ee"/>
+        <text x="64" y="44" fill="#22d3ee" text-anchor="middle" font-size="13">VAULT</text>
+        <text x="64" y="62" fill="#8294b0" text-anchor="middle">on-chain memo</text>
+        <rect x="130" y="20" width="100" height="58" rx="8" fill="#241a33" stroke="#a78bfa"/>
+        <text x="180" y="44" fill="#a78bfa" text-anchor="middle" font-size="13">TUNNEL</text>
+        <text x="180" y="62" fill="#8294b0" text-anchor="middle">NOSTR (post-KEX)</text>
+        <rect x="246" y="20" width="100" height="58" rx="8" fill="#2a1a2a" stroke="#f472d0"/>
+        <text x="296" y="44" fill="#f472d0" text-anchor="middle" font-size="13">OPEN</text>
+        <text x="296" y="62" fill="#8294b0" text-anchor="middle">NIP-17 NOSTR</text>
+        <text x="180" y="108" fill="#cdd9ec" text-anchor="middle">first contact → VAULT</text>
+        <path d="M180 116 L180 138" stroke="#34d399" marker-end="url(#a)"/>
+        <text x="180" y="158" fill="#34d399" text-anchor="middle">KEX → KEXACK → ZBOOT</text>
+        <path d="M180 166 L180 188" stroke="#34d399" marker-end="url(#a)"/>
+        <text x="180" y="208" fill="#a78bfa" text-anchor="middle">→ free + instant TUNNEL / calls</text>
+        <defs><marker id="a" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 z" fill="#34d399"/></marker></defs>
+      </svg>
+      <figcaption>Transport modes &amp; the on-chain handshake that unlocks Tunnel/calls (§2).</figcaption>
+    </figure>
+    <figure>
+      <svg viewBox="0 0 360 220" width="100%" height="220" xmlns="http://www.w3.org/2000/svg" font-family="JetBrains Mono, monospace" font-size="11">
+        <text x="180" y="16" fill="#cdd9ec" text-anchor="middle" font-size="12">Group sub-protocol ZMSG:3.0:GROUP:</text>
+        <g fill="#16243a" stroke="#22d3ee"><rect x="20" y="32" width="60" height="34" rx="6"/></g>
+        <text x="50" y="53" fill="#22d3ee" text-anchor="middle">GI</text><text x="50" y="80" fill="#8294b0" text-anchor="middle">invite</text>
+        <g fill="#16243a" stroke="#22d3ee"><rect x="100" y="32" width="60" height="34" rx="6"/></g>
+        <text x="130" y="53" fill="#22d3ee" text-anchor="middle">GA</text><text x="130" y="80" fill="#8294b0" text-anchor="middle">accept✚sig</text>
+        <g fill="#241a33" stroke="#a78bfa"><rect x="180" y="32" width="60" height="34" rx="6"/></g>
+        <text x="210" y="53" fill="#a78bfa" text-anchor="middle">GM</text><text x="210" y="80" fill="#8294b0" text-anchor="middle">message</text>
+        <g fill="#2a1a2a" stroke="#f87171"><rect x="260" y="32" width="40" height="34" rx="6"/></g>
+        <text x="280" y="53" fill="#f87171" text-anchor="middle">GK</text><text x="280" y="80" fill="#8294b0" text-anchor="middle">kick✚sig</text>
+        <g fill="#2a1a2a" stroke="#f87171"><rect x="308" y="32" width="40" height="34" rx="6"/></g>
+        <text x="328" y="53" fill="#f87171" text-anchor="middle">GY</text><text x="328" y="80" fill="#8294b0" text-anchor="middle">rotate✚sig</text>
+        <text x="180" y="118" fill="#cdd9ec" text-anchor="middle">GI/GA route fast over NOSTR/Tunnel</text>
+        <text x="180" y="138" fill="#cdd9ec" text-anchor="middle">GM/GK/GY go ON-CHAIN, per-member</text>
+        <text x="180" y="170" fill="#34d399" text-anchor="middle">GM decrypts with the message's OWN epoch key</text>
+        <text x="180" y="190" fill="#a78bfa" text-anchor="middle">GK/GY/GA signed → verify→authorize→replay-guard</text>
+        <text x="180" y="210" fill="#f472d0" text-anchor="middle">fan-out resolves peer's LIVE receive address</text>
+      </svg>
+      <figcaption>Group control + content messages and their v2.11.0 hardening (§1).</figcaption>
+    </figure>
+  </div>
+  <div class="note">📵 <b>Why no app screenshots:</b> ZCHAT marks the security-sensitive screens (chat detail, send/confirm, seed reveal) <span class="mono">FLAG_SECURE</span>, so the OS blocks screen capture (ADB returns black frames) — by design, and itself one of the things tested (§3, #222). The diagrams above and the phone mockups below illustrate the flows instead.</div>
+</section>
+
+<!-- ============ 1. GROUP MESSAGING ============ -->
+<section id="groups">
+  <h2>① Group messaging — the core campaign</h2>
+  <p class="secnote">Groups were effectively broken (memo overflow, address drift, lost sends, forgeable control). This is the bulk of the work: invites that fit, messages that deliver and decrypt, and roster/key mutations that can't be forged.</p>
+
+  <div class="card">
+    <h3>Address-representation drift broke group messaging <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#214 · #205 (root) · commit d5ca43b4b</span>
+    <div class="kv"><span class="k">What</span>A single wallet emits several valid Unified-Address representations. Group roster/accept used exact-string matching, so a peer's "accept" never matched their invited rep — rosters never synced and messages never fanned out.</div>
+    <div class="kv why"><span class="k">Why it happened</span>UA encodings differ between the receive screen and the KEX-sign path; #205 traced this as the root cause behind a whole family of address bugs.</div>
+    <div class="kv fix"><span class="k">Fix</span>Persisted self-address registry with hash-tolerant <span class="mono">isSelfAddress()</span>; peer-address alias registry so all reps of one peer collapse to one identity.</div>
+    <div class="tc"><h4>Test case TC-214</h4>
+    <table class="t">
+      <tr><td class="lbl">Precond</td><td>Two funded wallets (Honor=admin, Seeker=member), v2.11.0 code 78.</td></tr>
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>On Honor create a group, invite Seeker.</li><li>On Seeker accept the invite.</li><li>On Honor open Group Settings → members.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Seeker shows as ACTIVE exactly once (no duplicate rows); a message sent from Honor is delivered to Seeker's live address.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>GROUP_MSG decrypted with the wrong epoch key <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#215 · commit a0a5ee0e9</span>
+    <div class="kv"><span class="k">What</span>Messages were decrypted with the device's <i>current</i> group-key epoch, so any message sent before a key rotation (or from a lagging peer) showed "[Unable to decrypt]" forever.</div>
+    <div class="kv fix"><span class="k">Fix</span>Decrypt with the key for the message's <i>own</i> epoch (carried in the payload), with a bounded fallback window. Applied on both the live and history-load paths.</div>
+    <div class="tc"><h4>Test case TC-215</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>In a group, exchange a few messages.</li><li>Admin rotates the group key (kick or manual rotate).</li><li>Scroll back to messages sent before the rotation; reopen the chat.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Pre-rotation messages still render decrypted (not "[Unable to decrypt]") after rotation and after reload.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Group send lost on single-note wallets <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#217 · commit 7fb155c14</span>
+    <div class="kv"><span class="k">What</span>The first group message right after invite/accept (which consumed the only note) failed with transient insufficient funds and was silently dropped.</div>
+    <div class="kv fix"><span class="k">Fix</span>Block-aware retry: wait for change to confirm and retry; if delivered to ≥1 member clear the draft, else keep the draft and drop the optimistic bubble.</div>
+    <div class="tc"><h4>Test case TC-217</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Use a wallet with a single unspent note.</li><li>Create group + invite (consumes the note).</li><li>Immediately send a group message.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Message is NOT lost — it retries after change matures and delivers; draft preserved if delivery reaches no one.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Fan-out sent to stale invited address <span class="tag t-fix">Fix</span> <span class="tag t-feat">+ signed</span></h3>
+    <span class="id">#218 + #219 · commits c42a8c6a7, b7e6531a9, b539029a7</span>
+    <div class="kv"><span class="k">What</span>Group messages fanned out to the address a member was <i>invited</i> as, not their live receive address — and the address-adoption was unauthenticated (spoofable).</div>
+    <div class="kv fix"><span class="k">Fix</span>On a verified <span class="mono">GROUP_ACCEPT</span>, adopt the accepter's declared receive address; sign the accept (#219) so adoption is proven by the key-holder. Alias registry holds a fixed-point invariant (#218 hardening).</div>
+    <div class="tc"><h4>Test case TC-218/219</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Member accepts from a wallet whose live address differs from the invited rep.</li><li>Admin sends a group message.</li><li>(Negative) Replay a forged unsigned accept with a different address.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Message reaches the member's live address; the forged/unsigned accept does NOT switch the fan-out target (safe degrade).</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Signed GROUP_KICK / GROUP_KEY + admin UI <span class="tag t-sec">Security</span> <span class="tag t-feat">Feature</span></h3>
+    <span class="id">#187 + #204</span>
+    <div class="kv"><span class="k">What</span>Kick and key-rotation control messages were unsigned → any on-chain party could evict a member or poison the group key.</div>
+    <div class="kv fix"><span class="k">Fix</span>Per-member signature with the admin's KEX key; receiver does authenticate → authorize (signer == admin) → epoch-replay-guard before acting. #204 added the admin UI trigger in Group Settings.</div>
+    <div class="tc"><h4>Test case TC-187</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>As admin, Group Settings → Kick a member.</li><li>(Negative) Inject an unsigned GROUP_KICK from a non-admin.</li><li>(Negative) Replay an old signed kick (stale epoch).</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Legit kick removes the member &amp; rotates the key; unsigned/forged kick is ignored; replayed stale-epoch kick is ignored.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Compact invite fits the 512-byte memo <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#194 + #195</span>
+    <div class="kv"><span class="k">What</span>Group invites embedded the full roster + an ECIES blob and overflowed Zcash's 512-byte memo for any group size — invites silently failed (MemoTooLong) and groups never formed.</div>
+    <div class="kv fix"><span class="k">Fix</span>Compact invite carries only <span class="mono">name + inviter + key_epoch + k2</span> (group key wrapped under the existing KEX session, ~432B); roster discovered lazily. #195 added a central pre-submit memo-size guard.</div>
+    <div class="tc"><h4>Test case TC-194</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Create a group and invite a KEX'd peer.</li><li>Watch logcat / the send result.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">No MemoTooLongException; the invite is submitted on-chain and the peer can join.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Pending↔mined reconciliation &amp; retries <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#223 + #213 + #199 · commit 9dfc70a29</span>
+    <div class="kv"><span class="k">What</span>(#223) Sent group messages stayed "pending" forever and other senders' messages could be hidden (seq-only dedup). (#213/#199) Accept/invite lost on transient insufficient funds.</div>
+    <div class="kv fix"><span class="k">Fix</span>Reconcile by full <span class="mono">(sender, seq, epoch)</span> identity — keep all stored, drop only mined optimistic copies. Block-aware retry on accept/invite.</div>
+    <div class="tc"><h4>Test case TC-223</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Send a group message; wait for it to mine; reload the chat.</li><li>Have another member send while yours is pending.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Your message flips from pending→sent (no perpetual "sending"); the other member's message is NOT hidden.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<!-- ============ 2. TUNNEL / NOSTR / CALLS ============ -->
+<section id="tunnel">
+  <h2 class="v">② Tunnel / NOSTR / Calls</h2>
+  <p class="secnote">Tunnel mode (free, instant NOSTR after an on-chain handshake) and voice/video calls had a chain of bootstrap deadlocks. Reactions didn't propagate or persist.</p>
+
+  <div class="card">
+    <h3>Tunnel handshake bootstrap chain <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#200 · #206 · #208 · #209 · #201 · commit d247dd9f9</span>
+    <div class="kv"><span class="k">What</span>A sequence of related deadlocks: ZBOOT never fired on fresh first-contact (#206); single-note retry window shorter than change maturation deadlocked the ZBOOT (#208); responder stayed in VAULT after bootstrap (#209); calls never unlocked because the NOSTR pubkey wasn't delivered (#200); superseded on-chain KEXs caused flapping (#201).</div>
+    <div class="kv fix"><span class="k">Fix</span>Always (re-)send KEX at chat-open (idempotent); retry window &gt; change maturation; <span class="mono">routeIncomingBoot</span> upgrades responder VAULT→TUNNEL; ignore superseded KEXs.</div>
+    <div class="tc"><h4>Test case TC-TUNNEL</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Honor: New Chat with Seeker in Tunnel mode.</li><li>Wait for KEX → KEXACK → ZBOOT to complete.</li><li>Send messages both directions; then place a call.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Both sides land in TUNNEL; messages free+instant over NOSTR; call buttons enabled and call connects.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Reactions propagate over NOSTR &amp; persist <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#202 + #210 · commit ea2ebeaaa</span>
+    <div class="kv"><span class="k">What</span>Reactions didn't reach the recipient (target-id correlation mismatch) and were lost on reload.</div>
+    <div class="kv fix"><span class="k">Fix</span>Correct target-id correlation; persist reactions so they survive reload and render on the recipient.</div>
+    <div class="tc"><h4>Test case TC-202</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>React 👍 to a peer's message.</li><li>Confirm it appears on the peer's device.</li><li>Reload both chats.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Reaction shows on both sides and survives reload.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>First-contact KEX exceeded 512-byte memo <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#193</span>
+    <div class="kv"><span class="k">What</span>The first-contact KEX exceeded the memo limit (MemoTooLong) → "Unknown sender, can't reply".</div>
+    <div class="kv fix"><span class="k">Fix</span>Trimmed the KEX wire; it now carries an authenticated address the recipient recovers. Validated on a 2-device test.</div>
+    <div class="tc"><h4>Test case TC-193</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td>First-ever contact between two wallets; send an opening message.</td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">No MemoTooLong; recipient can identify the sender and reply.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<!-- ============ 3. SECURITY ============ -->
+<section id="sec">
+  <h2 class="v">③ Security hardening</h2>
+  <p class="secnote">Defense-in-depth on contacts, NOSTR receive path, and local exposure surfaces.</p>
+
+  <div class="card">
+    <h3>Encrypted contact nicknames + key-change surfacing <span class="tag t-sec">Security</span></h3>
+    <span class="id">#190</span>
+    <div class="kv"><span class="k">What</span>Contact nicknames stored in plaintext; a peer's key change wasn't surfaced to the user.</div>
+    <div class="kv fix"><span class="k">Fix</span>ContactBook moved to EncryptedSharedPreferences (with migrate + scrub, device-validated); the verify dialog now flags a key change (TOFU).</div>
+    <div class="tc"><h4>Test case TC-190</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Add a nickname for a contact.</li><li>Inspect prefs storage (no plaintext nickname).</li><li>Trigger a peer key change; open Verify.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Nickname is encrypted at rest; the verify dialog shows a key-change warning.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>NOSTR receive-path dedup + rotation hot-swap <span class="tag t-sec">Security</span></h3>
+    <span class="id">#188</span>
+    <div class="kv"><span class="k">What</span>Replayed NOSTR events could be re-processed; inbox key rotation required a restart.</div>
+    <div class="kv fix"><span class="k">Fix</span>Persistent seen-event LRU dedup (chat + calls); inbox rotation hot-swap (no restart).</div>
+    <div class="tc"><h4>Test case TC-188</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td>Replay a previously-seen NOSTR event; rotate the inbox key without restarting.</td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Duplicate event ignored; rotation takes effect live.</td></tr>
+    </table></div>
+  </div>
+
+  <div class="card">
+    <h3>Seed words removed from accessibility tree while masked <span class="tag t-sec">Security</span></h3>
+    <span class="id">#222 · commit 3ff57de5f</span>
+    <div class="kv"><span class="k">What</span>While the seed phrase was visually blurred/hidden, the words were still exposed as plaintext in the accessibility tree (screen readers / a11y scrapers).</div>
+    <div class="kv fix"><span class="k">Fix</span><span class="mono">Modifier.clearAndSetSemantics{}</span> on each word until revealed.</div>
+    <div class="tc"><h4>Test case TC-222</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Open seed backup (words masked).</li><li>Dump the a11y tree (<span class="mono">uiautomator dump</span>).</li><li>Tap reveal, dump again.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Masked: no seed words in the a11y tree. Revealed: words present.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<!-- ============ 4. PERFORMANCE ============ -->
+<section id="perf">
+  <h2 class="a">④ Performance — StrictMode main-thread I/O</h2>
+  <p class="secnote">Three disk/crypto operations were running on the UI thread (jank / ANR risk under StrictMode).</p>
+
+  <div class="card">
+    <h3>Move image-prep, file download/decrypt, and secure-wipe off the main thread <span class="tag t-perf">Perf</span></h3>
+    <span class="id">#203 · #211 · #212 · commits fd4a3c2ef, 23d1aa6e1</span>
+    <div class="kv"><span class="k">What</span>(#203) Image upload-prep, (#211) file download+decrypt+cache, and (#212) view-once secure-wipe all ran main-thread I/O — StrictMode violations.</div>
+    <div class="kv fix"><span class="k">Fix</span>All three moved to background dispatchers.</div>
+    <div class="tc"><h4>Test case TC-PERF</h4>
+    <table class="t">
+      <tr><td class="lbl">Precond</td><td>StrictMode enabled (debug); logcat open.</td></tr>
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Send an image.</li><li>Download a received file.</li><li>Open then dismiss a view-once item.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">No StrictMode disk/crypto-on-main-thread violations; UI stays responsive.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<!-- ============ 5. UX ============ -->
+<section id="ux">
+  <h2 class="m">⑤ UX / Onboarding</h2>
+  <div class="card">
+    <h3>Biometric "dark screen" on Send/confirm <span class="tag t-ux">UX</span></h3>
+    <span class="id">#192</span>
+    <div class="kv"><span class="k">What</span>The biometric prompt during Send left a black screen.</div>
+    <div class="kv fix"><span class="k">Fix</span>NEW_TASK + translucent activity handling for the biometric flow.</div>
+    <div class="tc"><h4>Test case TC-192</h4>
+    <table class="t"><tr><td class="lbl">Steps</td><td>Send with biometric confirmation enabled; complete the prompt.</td></tr>
+    <tr><td class="lbl">Expected</td><td class="exp">No black screen; the send confirm screen returns cleanly.</td></tr></table></div>
+  </div>
+  <div class="card">
+    <h3>Post-send blank dark screen (nav over-pop) <span class="tag t-ux">UX</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#207</span>
+    <div class="kv"><span class="k">What</span><span class="mono">Navigator.backToRoot</span> over-popped the NavHost → blank dark screen after sending.</div>
+    <div class="kv fix"><span class="k">Fix</span>Corrected the back-stack pop so it lands on the chat/home, not an empty host.</div>
+    <div class="tc"><h4>Test case TC-207</h4>
+    <table class="t"><tr><td class="lbl">Steps</td><td>Complete a send and observe the navigation result.</td></tr>
+    <tr><td class="lbl">Expected</td><td class="exp">Returns to the conversation/home, never a blank screen.</td></tr></table></div>
+  </div>
+  <div class="card">
+    <h3>Onboarding/seed robustness + transparent-deposit UX <span class="tag t-ux">UX</span></h3>
+    <span class="id">#189 · #185 · #198</span>
+    <div class="kv"><span class="k">What</span>(#189) Seed-backup verification + a process-death wallet-overwrite race; (#185) 3 transparent-deposit UX fixes; (#198) triaged 11 inherited swap-flow UI findings.</div>
+    <div class="kv fix"><span class="k">Fix</span>Backup-verification gating + process-death guard; deposit UX polish; swap crash/race guards (div-by-zero, price=0/null, stale-quote race).</div>
+    <div class="tc"><h4>Test case TC-189</h4>
+    <table class="t"><tr><td class="lbl">Steps</td><td>Onboard a new wallet; background/kill the app mid-onboarding; reopen.</td></tr>
+    <tr><td class="lbl">Expected</td><td class="exp">Seed backup is verified before proceeding; no wallet overwrite after process death.</td></tr></table></div>
+  </div>
+</section>
+
+<!-- ============ 6. AI / BACKEND ============ -->
+<section id="ai">
+  <h2 class="g">⑥ AI / Backend</h2>
+  <div class="card">
+    <h3>"Free" model still charged <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">#221 · backend f5cf954</span>
+    <div class="kv"><span class="k">What</span>A model flagged <span class="mono">isFreeTier</span> (shown "Free" in the picker) still debited token rates (~$0.0009/request).</div>
+    <div class="kv fix"><span class="k">Fix</span>Free-tier charges $0 on both <span class="mono">/ai/chat</span> and <span class="mono">/ai/image</span>; a paid model whose pricing resolves to $0 is rejected rather than served free. Regression test added (85 backend tests green).</div>
+    <div class="tc"><h4>Test case TC-221</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Pick a "Free" model; send a chat + an image request.</li><li>Check the AI credit balance + usage ledger.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp"><span class="mono">chargedMicroUsd = 0</span>; balance unchanged; no decrement recorded.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<!-- ============ 7. CRITICIZE ============ -->
+<section id="crit">
+  <h2 class="a">⑦ /criticize adversarial hardening</h2>
+  <p class="secnote">A 3-round multi-agent self-audit caught a regression in the #215 fix and several latent issues — all fixed in the final build (code 78).</p>
+  <div class="card">
+    <h3>Bounded epoch loop, GK/GY delimiter guard, dead-code removal <span class="tag t-crit">Critical</span> <span class="tag t-fix">Fix</span></h3>
+    <span class="id">/criticize R1–R3 · commit f560245dc</span>
+    <div class="kv"><span class="k">What</span>(CRITICAL) The #215 epoch-aware decrypt iterated an <i>unbounded</i> epoch range with no exception guard — one bad stored key threw out the whole message and a high epoch could amplify work. Also: a canonical-string delimiter-injection surface on GK/GY, and two dead invite overloads.</div>
+    <div class="kv fix"><span class="k">Fix</span>Bounded 64-epoch window + per-key <span class="mono">runCatching</span> on both decrypt paths; reject <span class="mono">|</span> in signer addresses; removed the dead overloads.</div>
+    <div class="tc"><h4>Test case TC-CRIT</h4>
+    <table class="t">
+      <tr><td class="lbl">Steps</td><td><ol class="steps"><li>Receive a GROUP_MSG stamping a very high epoch number.</li><li>Have one corrupt stored group key present.</li></ol></td></tr>
+      <tr><td class="lbl">Expected</td><td class="exp">Decrypt attempts are bounded to ≤64; a corrupt key is skipped (not fatal); other messages still decrypt.</td></tr>
+    </table></div>
+  </div>
+</section>
+
+<footer>
+  <p><b>Build under test:</b> ZCHAT v2.11.0 · versionCode <b>78</b> · commit <span class="mono">f560245dc</span> (android, <span class="mono">decentrathai/main</span>) + backend <span class="mono">f5cf954</span>. APK live at <a href="https://api.zsend.xyz/app/download">api.zsend.xyz/app/download</a>.</p>
+  <p><b>Installed:</b> Honor <span class="mono">AXRGVB3707003310</span> + Seeker <span class="mono">SM02E4060314170</span> — both on code 78.</p>
+  <p><b>Verification status:</b> all code compiles under <span class="mono">-Werror</span>; 87 JVM unit tests + 85 backend tests green. The group-messaging fixes are unit-validated; full 2-device on-chain round-trip pending funded test wallets.</p>
+  <div style="margin-top:10px">
+    <span class="pill">#185–#223</span><span class="pill">13 commits</span><span class="pill">3 transport modes</span><span class="pill">6 CRITICAL fixed</span><span class="pill">FLAG_SECURE screens</span>
+  </div>
+  <p style="margin-top:14px;color:#5a6b85">Generated 2026-06-16 · diagrams are inline SVG (self-contained) · screenshots omitted where FLAG_SECURE blocks capture.</p>
+</footer>
+
+</div>
+</body>
+</html>

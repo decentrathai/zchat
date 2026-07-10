@@ -465,7 +465,22 @@ tail -50 /home/yourt/zchat-health.log
 
 ### Cloudflare
 
-#### zsend.xyz Deployment (Cloudflare Tunnel)
+#### zsend.xyz Deployment
+> **⚠️ UPDATED 2026-07-10 — this section below is now STALE.** zsend.xyz + zchat.sh are served by the
+> **Cloudflare Pages project `zchat-landing`** (custom domain), NOT the cloudflared tunnel→:3002 (that
+> dev server is now only a local rollback). Deploy is **static export + `wrangler pages deploy`**, not
+> git-connected. Verified working recipe (the old next-on-pages SSR recipe broke on the next-16 bump):
+> ```bash
+> cd apps/landing
+> NEXT_STATIC_EXPORT=1 pnpm build            # → out/ (functions/ auto-bundled); app has no server features
+> CLOUDFLARE_API_TOKEN=$CLOUDFLARE_API_TOKEN_PAGES CLOUDFLARE_ACCOUNT_ID=$CLOUDFLARE_ACCOUNT_ID \
+>   npx wrangler@4 pages deploy out --project-name=zchat-landing --branch=preview-x --commit-dirty=true  # preview → verify
+>   # then --branch=main to promote to production (zsend.xyz). Rollback via CF Pages deployment history.
+> ```
+> The `apps/web` (app.zsend.xyz) and `api.zsend.xyz` may still route via the tunnel — the note below
+> applies to those; only the landing moved to Pages.
+
+#### zsend.xyz Deployment (Cloudflare Tunnel — historical / rollback)
 **ALL zsend.xyz sites are served via Cloudflare Tunnel, NOT Pages.**
 
 | Domain | Routes To | Service |
@@ -621,6 +636,19 @@ cloudflared tunnel run zchat
 ## Common Issues
 - If lightwalletd fails: check that zebrad RPC is accessible on port 8232
 - Zcash.conf location: `/home/yourt/.zcash/zcash.conf` (created for lightwalletd compatibility)
+
+---
+## ADB Screenshots Rule
+Always resize ADB screenshots to max 1800px before reading:
+```bash
+powershell.exe "& 'C:\Users\yourt\Downloads\platform-tools\adb.exe' exec-out screencap -p" > /tmp/screen_raw.png && python3 -c "
+from PIL import Image
+img = Image.open('/tmp/screen_raw.png')
+img.thumbnail((1800, 1800))
+img.save('/tmp/screen.png')
+"
+```
+Never read raw full-resolution screenshots directly.
 
 ---
 ## Session Notes

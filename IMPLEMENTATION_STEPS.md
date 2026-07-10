@@ -1,8 +1,8 @@
 # Implementation Steps
 
-**Version:** 1.2
+**Version:** 1.3
 **Created:** 2026-01-19
-**Updated:** 2026-02-02
+**Updated:** 2026-02-12
 **Current Phase:** Phase 2 - Quality Improvements
 
 ---
@@ -341,6 +341,40 @@
 ---
 
 ## Session Log
+
+### Session: 2026-02-08 to 2026-02-12 - Pending Message Fix, Double-Send Queue, Block-Height Retry
+**Focus:** Fix 5-10s pending message delay, implement message queue for rapid sends, block-height retry for insufficient balance
+
+**Completed:**
+- [x] **Pending message delay fix**: Added `yield()` before `createChunkedMessageProposal()` to let Main dispatcher process StateFlow emission before blocking proof generation. Result: pending message appears in UI within 2ms of send tap (was 5-10s).
+- [x] **ConvID protocol fixes**: Fixed 7 bugs in convID handling, created atomic `getOrCreateConversationId()`, fixed race conditions in conversation initialization.
+- [x] **Extended logging**: Added ZCHAT_REPO, ZCHAT_FLOW, ZCHAT_SYNC log tags for diagnostics.
+- [x] **Message queue implementation**: Replaced silent `if (Sending) return` with queue system. When a send is in progress, additional sends are queued with pending UI shown immediately. `QueuedMessage` data class with peerAddress, message, amountZatoshi, pendingId, retryCount.
+- [x] **Block-height retry for queued messages**: When queued message fails with "Insufficient balance" (change notes not yet spendable), retries after `_blockHeight` increases. Uses `_blockHeight.first { it > currentHeight }` with `withTimeout(5 min)`. MAX_QUEUE_RETRIES = 4.
+- [x] **Verified on device**: Both "Block test A" and "Block test B" confirmed in UI. Second message succeeded at retry 4, block 3237663 (5 blocks / ~5 minutes after first tx).
+- [x] **APK v2.8.3 built and tested on Honor 90** (serial AXRGVB3707003310)
+- [x] **APK v2.8.4-queue-fix deployed to zsend.xyz**
+
+**Files Modified:**
+- `ChatViewModel.kt` — Major changes:
+  - Added `import kotlinx.coroutines.yield` and `import kotlinx.coroutines.flow.first`
+  - Added `QueuedMessage` data class and `messageQueue` list
+  - Added `MAX_QUEUE_RETRIES = 4` and `QUEUE_RETRY_TIMEOUT_MS = 300_000L` constants
+  - Modified `sendMessage()`: queue instead of drop when sending in progress
+  - Modified `doSendMessage()`: added `existingPendingId` and `retryCount` params, `yield()` before proof gen
+  - Added `processNextQueuedMessage()` function
+  - Block-height-based retry in catch block for insufficient balance
+
+**Key Technical Insight:**
+- Zcash change notes require ~5 block confirmations before becoming spendable in SDK's Rust backend
+- `refreshTransactions()`/`refreshAllBalances()` only refresh cached state, don't trigger block scanning
+- Must observe `_blockHeight` changes to know when SDK has processed new blocks with spendable notes
+
+**APK Versions:**
+- v2.8.3: Built with all fixes (pending delay, queue, block-retry)
+- v2.8.4-queue-fix: Deployed to zsend.xyz (`/home/yourt/zchat-v2.8.4-queue-fix.apk`)
+
+---
 
 ### Session: 2026-01-22 - Logging Redaction Complete + Infrastructure Verification
 **Focus:** Complete P2 Logging Redaction + Full End-to-End Retest

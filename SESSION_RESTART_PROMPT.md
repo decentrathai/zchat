@@ -41,9 +41,7 @@ echo "=== ZCHAT Service Health Check ===" && \
 pgrep -f 'cloudflared tunnel' > /dev/null && echo "1. Cloudflare Tunnel: UP" || echo "1. Cloudflare Tunnel: DOWN - CRITICAL" && \
 curl -s http://localhost:4000/health > /dev/null && echo "2. Backend API (4000): UP" || echo "2. Backend API (4000): DOWN" && \
 curl -s http://localhost:3002 > /dev/null && echo "3. Landing Page (3002): UP" || echo "3. Landing Page (3002): DOWN" && \
-curl -s http://127.0.0.1:8232 > /dev/null && echo "4. Zebrad (8232): UP" || echo "4. Zebrad (8232): DOWN" && \
-pgrep -f lightwalletd > /dev/null && echo "5. Lightwalletd (9067): UP" || echo "5. Lightwalletd (9067): DOWN" && \
-curl -s http://localhost:3000 > /dev/null && echo "6. Web Frontend (3000): UP" || echo "6. Web Frontend (3000): DOWN (optional)"
+curl -s http://localhost:3000 > /dev/null && echo "4. Web Frontend (3000): UP" || echo "4. Web Frontend (3000): DOWN (optional)"
 ```
 
 #### Start All Services (If Any Are Down)
@@ -68,20 +66,7 @@ cd ~/zchat/apps/backend && nohup pnpm dev > ~/backend.log 2>&1 &
 #    This serves zsend.xyz and zsend.xyz/admin for managing whitelist
 cd ~/zchat/apps/landing && nohup pnpm dev > ~/landing.log 2>&1 &
 
-# 4. ZEBRAD - Zcash blockchain node (port 8232)
-#    Required for wallet operations. Takes time to sync if stopped.
-nohup zebrad start > ~/zebrad.log 2>&1 &
-
-# 5. LIGHTWALLETD (port 9067) - gRPC interface for wallets
-#    MUST wait for Zebrad to be ready first (check port 8232)
-#    Required for Android app sync via backend
-/home/yourt/go/bin/lightwalletd \
-  --zcash-conf-path /home/yourt/.zcash/zcash.conf \
-  --data-dir /home/yourt/lightwalletd_db \
-  --log-file /home/yourt/lightwalletd.log \
-  --no-tls-very-insecure &
-
-# 6. WEB FRONTEND (port 3000) - Optional, only if working on web app
+# 4. WEB FRONTEND (port 3000) - Optional, only if working on web app
 cd ~/zchat/apps/web && nohup pnpm dev > ~/frontend.log 2>&1 &
 ```
 
@@ -97,16 +82,8 @@ Cloudflare Tunnel (zchat)
     |                        +-> /admin route --> Admin Dashboard
     |
     +-> api.zsend.xyz   --> Backend API (localhost:4000) --> PostgreSQL
-    |                                |
-    |                                v
-    |                         Lightwalletd (localhost:9067)
-    |                                |
-    |                                v
-    |                         Zebrad (localhost:8232) --> Zcash Blockchain
     |
     +-> app.zsend.xyz   --> Web Frontend (localhost:3000)
-    |
-    +-> lwd.zsend.xyz   --> Lightwalletd (localhost:9067)
 ```
 
 **Note:** ALL zsend.xyz sites are served via Cloudflare Tunnel (NOT Cloudflare Pages).
@@ -129,10 +106,7 @@ Expected results:
 ~/cloudflared.log     - Tunnel logs (check for connection errors)
 ~/backend.log         - Backend API logs (check for startup errors)
 ~/landing.log         - Landing page logs (port 3002)
-~/zebrad.log          - Zcash node logs (check sync status)
-~/lightwalletd.log    - Wallet server logs
 ~/frontend.log        - Web frontend logs
-~/zchat-health.log    - Auto-recovery logs (cron runs every 5 min)
 ```
 
 ---
@@ -158,36 +132,25 @@ These were verified during hostile audit. Accept them as true:
 
 **P1 (Release Critical) is COMPLETE (2026-01-21).** All core security features implemented.
 
-**Recent Work (2026-02-02):**
+**Recent Work (2026-02-12):**
 
-#### Cyberpunk UI Theme
-- ✅ Custom icons (16 assets) integrated from Nano Banana Pro
-- ✅ Splash screen background: `#0D0B1A` (cyberpunk deep purple)
-- ✅ Color palette: bgDeep, bgPrimary, bgSecondary, accentCyan, accentMagenta
-- ✅ Orbitron font for cyberpunk typography
-- ✅ Glassmorphism effects via Haze library
-- ✅ APK size: 237MB (4K icons)
+#### Messaging Reliability Fixes
+- ✅ **Pending message delay fix**: `yield()` before proof generation — messages appear in UI within 2ms of send tap (was 5-10s)
+- ✅ **ConvID protocol fixes**: 7 bugs fixed, atomic `getOrCreateConversationId()`, race condition fixes
+- ✅ **Message queue**: Rapid sends queued instead of silently dropped, pending UI shown immediately
+- ✅ **Block-height retry**: Queued messages retry after new block scanned (change notes need ~5 blocks to become spendable)
+- ✅ **Extended logging**: ZCHAT_REPO, ZCHAT_FLOW, ZCHAT_SYNC tags for diagnostics
+- ✅ **Verified on device**: Double-send confirmed working (retry 4, block 3237663)
 
-#### Admin Dashboard Enhancements
-- ✅ Delete button for whitelist entries (with confirmation modal)
-- ✅ Custom message field in approval modal (appears in email)
-- ✅ "Already registered" notification for duplicate email submissions
-
-#### Backend Fixes
-- ✅ CORS methods explicitly include DELETE
-- ✅ Custom JSON parser handles empty bodies with Content-Type header
-- ✅ HTML escaping via `escapeHtml()` for custom email messages
-
-#### Dead Man's Switch Research
-- ✅ Comprehensive research document: `/home/yourt/zchat-android/docs/DEAD_MANS_SWITCH_RESEARCH.md`
-- Architecture: AlarmManager + WorkManager backup + Boot receiver
-- Remote cancellation via Zcash transaction
-- iOS implementation notes (BGTaskScheduler limitations)
+#### Earlier (2026-02-02): Cyberpunk UI & DMS Research
+- ✅ Cyberpunk UI Theme (icons, colors, Orbitron font, glassmorphism)
+- ✅ Admin Dashboard enhancements (delete, custom messages)
+- ✅ Dead Man's Switch research document complete
 
 **Latest APK:**
-- Version: `zchat-v2.8.1-cyberpunk-20260202.apk`
-- Location: `/home/yourt/zchat-v2.8.1-cyberpunk-20260202.apk`
-- Size: 237MB
+- Version: `zchat-v2.8.4-queue-fix.apk`
+- Location: `/home/yourt/zchat-v2.8.4-queue-fix.apk`
+- Size: 150MB
 
 ---
 
@@ -197,8 +160,10 @@ These were verified during hostile audit. Accept them as true:
 
 **Admin Secret (stored in localStorage):**
 ```
-b5a0a9be7f25d75b8402370a9176fec75c987c9a80a6134c65edab727e04ecff
+<REDACTED — read from ADMIN_SECRET in apps/backend/.env; never commit the value>
 ```
+> The production admin secret must NOT be written into this (committed) document. Read the live
+> value from `apps/backend/.env` (`ADMIN_SECRET=...`) on the server, or from `~/.claude/.secrets`.
 
 **Flow:**
 1. User requests access at zsend.xyz → submits email + reason
@@ -266,15 +231,18 @@ JAVA_HOME="/usr/lib/jvm/java-17-openjdk-amd64" \
 # Quick compile check (faster)
 ./gradlew :ui-lib:compileZcashmainnetFossDebugSources
 
-# Copy APK to Windows Downloads
-cp app/build/outputs/apk/zcashmainnetFoss/debug/*.apk /mnt/c/Users/yourt/Downloads/
-
-# Copy APK to download system location
-cp app/build/outputs/apk/zcashmainnetFoss/debug/*.apk /home/yourt/
+# DEPLOY TO ZSEND.XYZ (ALWAYS DO AFTER BUILD)
+./deploy-apk.sh "2.8.2-version-name"
 
 # Install to connected device
 $HOME/android-sdk/platform-tools/adb install app/build/outputs/apk/zcashmainnetFoss/debug/*.apk
 ```
+
+**IMPORTANT:** Always run `./deploy-apk.sh` after building to update zsend.xyz download system. The script:
+- Removes old APKs from `/home/yourt/`
+- Copies new APK with version name
+- Updates timestamp (backend serves newest by mtime)
+- Also copies to Windows Downloads
 
 ---
 
@@ -346,19 +314,19 @@ See DEVELOPMENT_STANDARDS.md for complete reference with code examples.
    - What should be worked on next
 6. **Ask user** what they wants to work on if unclear
 
-**Last session work (2026-02-02):**
-- ✅ Cyberpunk UI theme complete (splash, icons, colors)
-- ✅ Admin dashboard: delete button + custom message in approval emails
-- ✅ Backend: CORS DELETE fix, empty JSON body handling, HTML escaping
-- ✅ Dead Man's Switch: comprehensive research document
-- ✅ Built APK v2.8.1-cyberpunk-20260202 (237MB)
-- ✅ Responded to Grok's security analysis with technical corrections
+**Last session work (2026-02-12):**
+- ✅ Pending message delay fixed (yield() before proof gen — 2ms vs 5-10s)
+- ✅ Message queue: rapid double/triple sends queued, not dropped
+- ✅ Block-height retry: queued messages retry after new block (~5 blocks for change notes)
+- ✅ ConvID fixes: 7 bugs, atomic getOrCreateConversationId()
+- ✅ Built & deployed APK v2.8.4-queue-fix (150MB)
+- ✅ Tested on Honor 90 + Samsung — both messages confirmed
 
 **Next recommended tasks:**
 - Implement Dead Man's Switch (Phase 1: Core Timer)
 - P2: ADDR transaction sending integration
 - P2: Identity switching UI
-- Reduce APK size (optimize 4K icons)
+- Clean up extended diagnostic logging for release builds
 
 ## END OF PROMPT
 
@@ -368,4 +336,4 @@ See DEVELOPMENT_STANDARDS.md for complete reference with code examples.
 
 **File location:** `/home/yourt/zchat/SESSION_RESTART_PROMPT.md`
 
-*Last updated: 2026-02-02*
+*Last updated: 2026-02-12*
