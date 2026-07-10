@@ -15,7 +15,8 @@
   },
   "pnpm": {
     "overrides": {
-      "@types/react": "18.3.26"
+      "@types/react": "18.3.26",
+      "fast-uri": "^3.1.2"
     }
   }
 }
