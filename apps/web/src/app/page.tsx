@@ -6,6 +6,7 @@ import ChatSidebar from '@/components/ChatSidebar';
 import ChatWindow from '@/components/ChatWindow';
 import DeveloperTools from '@/components/DeveloperTools';
 import { useTheme } from '@/components/theme/ThemeProvider';
+import { encryptAndStoreSeed, decryptFromStorage, hasStoredSeed } from '@/lib/secureSeedStorage';
 
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -71,6 +72,10 @@ export default function Home() {
   // Seed phrase state
   const [seedPhrase, setSeedPhrase] = useState('');
   const [showSeed, setShowSeed] = useState(false);
+  // Held in memory only — used to decrypt the AES-GCM seed envelope when the user clicks
+  // "show seed". Never persisted to storage. Persists for the full tab lifetime (state is
+  // cleared only when the tab closes); there is currently no in-app logout/lock that evicts it.
+  const [sessionPassword, setSessionPassword] = useState<string | null>(null);
   const [seedBackedUp, setSeedBackedUp] = useState(false);
   const [showBackupMessage, setShowBackupMessage] = useState(false);
 
@@ -297,9 +302,11 @@ export default function Home() {
         return;
       }
 
-      // Step 3: Store seed phrase in localStorage (client-side only)
-      // In production, this should be encrypted with user's password
-      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      // Step 3: Store seed phrase encrypted under user password (AES-GCM, PBKDF2-100k).
+      // XSS can still steal the ciphertext but needs the password — which only
+      // exists in DOM state during this login form submit.
+      await encryptAndStoreSeed(mnemonic, password);
+      setSessionPassword(password);
       localStorage.setItem('zchat_wallet_address', address);
       localStorage.setItem('walletInitialized', 'true');
 
@@ -341,6 +348,16 @@ export default function Home() {
 
       const loginResponse = await login(username, password);
       localStorage.setItem('authToken', loginResponse.token);
+      // Hold the password in memory so handleShowSeed can decrypt the AES-GCM
+      // envelope without re-prompting. Cleared on tab close (state vanishes).
+      setSessionPassword(password);
+
+      // Eagerly upgrade an at-rest seed while the password is in hand: this rewrites any legacy
+      // PLAINTEXT seed as an encrypted envelope (and bumps older 100k-iteration envelopes to the
+      // current KDF strength via migrate-on-unlock), instead of leaving it until "show seed".
+      if (hasStoredSeed()) {
+        await decryptFromStorage(password).catch(() => {});
+      }
 
       // Fetch wallet address from backend API (not WASM)
       try {
@@ -374,20 +391,46 @@ export default function Home() {
   };
 
   // Wallet handlers
-  const handleShowSeed = () => {
-    // Get seed phrase from localStorage (stored client-side during registration)
-    const storedSeed = localStorage.getItem('zchat_seed_phrase');
-    if (storedSeed) {
-      setSeedPhrase(storedSeed);
-      setShowSeed(true);
-    } else {
-      // Fallback to WASM (for legacy wallets)
+  const handleShowSeed = async () => {
+    if (!hasStoredSeed()) {
+      // No encrypted entry — fall back to WASM (legacy wallets).
       if (walletCore) {
         const phrase = walletCore.get_backup_phrase();
         setSeedPhrase(phrase);
         setShowSeed(true);
       }
+      return;
     }
+    // Need the password to decrypt. Use the session-cached one if available,
+    // otherwise prompt the user. We accept a one-time prompt() here rather than
+    // a full modal — this is the "secondary platform" web app.
+    const pw = sessionPassword ?? window.prompt('Enter your password to reveal the seed phrase');
+    if (!pw) return;
+    try {
+      const phrase = await decryptFromStorage(pw);
+      if (phrase) {
+        if (!sessionPassword) setSessionPassword(pw);
+        setSeedPhrase(phrase);
+        setShowSeed(true);
+      }
+    } catch (err) {
+      window.alert(`Could not decrypt seed: ${getErrorMessage(err)}`);
+    }
+  };
+
+  // SECURITY: in-app lock/logout. Evicts the in-memory password + decrypted seed (which previously
+  // lingered for the whole tab lifetime — see sessionPassword comment) and returns to the login
+  // screen. The encrypted seed envelope stays in storage; re-entry requires the password again.
+  const handleLock = () => {
+    setSessionPassword(null);
+    setPassword('');
+    setSeedPhrase('');
+    setShowSeed(false);
+    setCurrentUser(null);
+    setSelectedPeerAddress(null);
+    setMessages([]);
+    setConversations([]);
+    setAuthMessage('Locked. Enter your password to unlock.');
   };
 
   const handleSeedBackedUp = () => {
@@ -426,8 +469,14 @@ export default function Home() {
         return;
       }
 
-      // 4) Update localStorage with new seed and address
-      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      // 4) Update localStorage with new seed (encrypted) and address
+      const pwForEncrypt = sessionPassword ?? window.prompt('Enter your password to encrypt the new seed');
+      if (!pwForEncrypt) {
+        setWalletActionStatus('Regeneration cancelled — password required');
+        return;
+      }
+      await encryptAndStoreSeed(mnemonic, pwForEncrypt);
+      if (!sessionPassword) setSessionPassword(pwForEncrypt);
       localStorage.setItem('zchat_wallet_address', newAddress);
       localStorage.setItem('walletInitialized', 'true');
       localStorage.removeItem('seedBackedUp');
@@ -497,8 +546,14 @@ export default function Home() {
         return;
       }
 
-      // Store new seed phrase
-      localStorage.setItem('zchat_seed_phrase', mnemonic);
+      // Store new seed phrase (encrypted)
+      const pwForEncrypt = sessionPassword ?? window.prompt('Enter your password to encrypt the new seed');
+      if (!pwForEncrypt) {
+        setWalletActionStatus('Regeneration cancelled — password required');
+        return;
+      }
+      await encryptAndStoreSeed(mnemonic, pwForEncrypt);
+      if (!sessionPassword) setSessionPassword(pwForEncrypt);
       setSeedPhrase(mnemonic);
 
       // 3) Send rotation messages to all peers
@@ -847,6 +902,15 @@ export default function Home() {
           >
             {theme === 'dark' ? '☀️ Light' : '🌙 Dark'}
           </button>
+          {currentUser && (
+            <button
+              onClick={handleLock}
+              className="px-3 py-1.5 text-sm font-medium rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+              title="Lock — clears the in-memory password and seed"
+            >
+              🔒 Lock
+            </button>
+          )}
         </div>
       </nav>
 
