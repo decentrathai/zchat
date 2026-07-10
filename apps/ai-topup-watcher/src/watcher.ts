@@ -24,6 +24,8 @@ type Env = {
   minConfirmations: number;
   priceApiUrl: string;
   memoPrefix: string;
+  telegramBotToken: string | null;
+  telegramChatId: string | null;
 };
 
 function loadEnv(): Env {
@@ -45,7 +47,28 @@ function loadEnv(): Env {
       process.env.PRICE_API_URL ??
       'https://api.coingecko.com/api/v3/simple/price?ids=zcash&vs_currencies=usd',
     memoPrefix: process.env.MEMO_PREFIX ?? 'ai-topup:',
+    telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? null,
+    telegramChatId: process.env.TELEGRAM_CHAT_ID ?? null,
   };
+}
+
+// Best-effort operator notification over Telegram. A notify failure must NEVER break the credit loop,
+// so everything (including a non-2xx response and network errors) is swallowed with a console.error.
+async function notifyTelegram(env: Env, text: string): Promise<void> {
+  if (!env.telegramBotToken || !env.telegramChatId) return;
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${env.telegramBotToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: env.telegramChatId, text, parse_mode: 'HTML' }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      console.error(`[${new Date().toISOString()}] Telegram notify failed: http-${res.status}`);
+    }
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] Telegram notify failed:`, e);
+  }
 }
 
 type State = {
@@ -390,6 +413,13 @@ async function processOnce(env: Env, state: State): Promise<State> {
       if (result.ok || result.status === 'already-credited') {
         processed.add(m.txid);
         if (m.height > highestSeen) highestSeen = m.height;
+        // Notify only on a NEW credit — already-credited replays stay silent.
+        if (result.ok && result.status !== 'already-credited') {
+          await notifyTelegram(
+            env,
+            `💰 AI top-up: $${(Number(microUsd) / 1e6).toFixed(2)} credited\nuser: ${userId}\ntx: ${m.txid.slice(0, 16)}…\n${confirmations} conf @ height ${m.height}`,
+          );
+        }
       } else if (isPermanentCreditRejection(result.httpStatus)) {
         // PERMANENT rejection (404 unknown user / 400|422 validation): this deposit can never credit.
         // POISON it — record the txid as processed so the scan floor advances past it — and ALERT for
@@ -401,6 +431,13 @@ async function processOnce(env: Env, state: State): Promise<State> {
         console.error(
           `[${new Date().toISOString()}] ALERT: permanent credit rejection for tx=${m.txid} user=${userId} ` +
             `(http ${result.httpStatus}, status=${result.status}) — poisoning (won't retry). Manual review required.`,
+        );
+        // Route the alert to the operator's Telegram too — a poisoned deposit is real ZEC that a user
+        // sent but can't be credited, so it needs human attention, not just a log line.
+        await notifyTelegram(
+          env,
+          `⚠️ AI top-up POISONED (manual review): tx ${m.txid.slice(0, 16)}… user ${userId} ` +
+            `rejected http ${result.httpStatus} (${result.status}). Deposit NOT credited.`,
         );
         processed.add(m.txid);
         if (m.height > highestSeen) highestSeen = m.height;
