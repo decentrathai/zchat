@@ -10,7 +10,7 @@ export const GITHUB_RELEASES_URL =
   "https://github.com/decentrathai/zchat-android/releases/latest"
 
 /** Current shipped APK version. */
-export const APK_VERSION = "2.12.2"
+export const APK_VERSION = "2.12.3"
 
 /**
  * Permanent SHA-256 fingerprint of ZCHAT's dedicated release signing certificate.
