@@ -114,6 +114,8 @@ vi.mock('resend', () => ({
 
 // Now import the ACTUAL server - this tests the real code
 import { server, __resetRegisterRateLimit } from './server';
+// Mocked above — imported so individual tests can override verification results.
+import { verifyDepositOnChain } from './wallet';
 
 // Test secrets match the stubbed env vars above
 const testJwtSecret = 'test-jwt-secret';
@@ -859,6 +861,40 @@ describe('AI Revenue Routes', () => {
       const body = response.json();
       expect(body.balanceMicroUsd).toBe('1500000');
       expect(body.balanceUsd).toBe(1.5);
+      // freeTrialGranted=false → not a trial account (no deposit lookup needed).
+      expect(body.onFreeTrial).toBe(false);
+    });
+
+    // #12: the client greys out trial-locked models by pairing this per-user flag with the
+    // per-model zchat_trial_eligible flag from /ai/models.
+    it('reports onFreeTrial=true for a trial account with no credited deposit', async () => {
+      mockPrismaAiAccount.findUnique
+        .mockResolvedValueOnce({ userId: 'cuid_abc', balanceMicroUsd: 150_000n, freeTrialGranted: true, tokenHash: 'x' })
+        .mockResolvedValueOnce({ userId: 'cuid_abc', balanceMicroUsd: 150_000n, freeTrialGranted: true });
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValueOnce(null);
+
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/ai/balance',
+        headers: { authorization: 'Bearer some-token' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().onFreeTrial).toBe(true);
+    });
+
+    it('reports onFreeTrial=false once a deposit has been credited', async () => {
+      mockPrismaAiAccount.findUnique
+        .mockResolvedValueOnce({ userId: 'cuid_abc', balanceMicroUsd: 5_150_000n, freeTrialGranted: true, tokenHash: 'x' })
+        .mockResolvedValueOnce({ userId: 'cuid_abc', balanceMicroUsd: 5_150_000n, freeTrialGranted: true });
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValueOnce({ id: 'dep_1' });
+
+      const response = await server.inject({
+        method: 'GET',
+        url: '/api/v1/ai/balance',
+        headers: { authorization: 'Bearer some-token' },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().onFreeTrial).toBe(false);
     });
   });
 
@@ -970,6 +1006,16 @@ describe('AI Revenue Routes', () => {
       zecUsdPrice: '40.00',
       microUsd: '20000000',
     };
+
+    // On-chain verification is ON BY DEFAULT now (#26). These base tests opt out explicitly
+    // to stay hermetic; the default-on and CREDIT_REQUIRE_ONCHAIN_VERIFY describes below
+    // exercise the verification path itself.
+    beforeEach(() => {
+      process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY = '0';
+    });
+    afterEach(() => {
+      delete process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY;
+    });
 
     it('returns 401 without admin secret', async () => {
       const response = await server.inject({
@@ -1097,6 +1143,60 @@ describe('AI Revenue Routes', () => {
         payload: { ...baseBody, microUsd: tooMuch },
       });
       expect(response.statusCode).toBe(400);
+    });
+
+    // Regression for #26: verification used to be opt-IN (=== '1') and the flag was absent in
+    // production, so any admin-key holder could credit fabricated txids. It is now opt-OUT.
+    describe('on-chain verification is ON by default', () => {
+      it('returns 503 when the flag is unset and WALLET_DB_PATH is not configured', async () => {
+        delete process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY; // default path (outer beforeEach set '0')
+        const originalWalletDb = process.env.WALLET_DB_PATH; // dotenv may have loaded one
+        delete process.env.WALLET_DB_PATH;
+        mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+        mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+          userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+        });
+        try {
+          const response = await server.inject({
+            method: 'POST',
+            url: '/api/v1/ai/admin/credit-from-deposit',
+            headers: { 'x-admin-secret': testAdminSecret },
+            payload: baseBody,
+          });
+          expect(response.statusCode).toBe(503);
+          expect(response.json().error).toMatch(/WALLET_DB_PATH not set/);
+          // Never reached the balance-mutating transaction — fail closed, no credit.
+          expect(mockPrismaTransaction).not.toHaveBeenCalled();
+        } finally {
+          if (originalWalletDb !== undefined) process.env.WALLET_DB_PATH = originalWalletDb;
+        }
+      });
+
+      it('runs verification when the flag is unset: a failed on-chain check rejects with 403', async () => {
+        delete process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY;
+        const originalWalletDb = process.env.WALLET_DB_PATH;
+        process.env.WALLET_DB_PATH = '/tmp/mock-wallet-db';
+        mockPrismaAiTopupDeposit.findUnique.mockResolvedValueOnce(null);
+        mockPrismaAiAccount.findUnique.mockResolvedValueOnce({
+          userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+        });
+        vi.mocked(verifyDepositOnChain).mockResolvedValueOnce('txid not found in wallet');
+        try {
+          const response = await server.inject({
+            method: 'POST',
+            url: '/api/v1/ai/admin/credit-from-deposit',
+            headers: { 'x-admin-secret': testAdminSecret },
+            payload: baseBody,
+          });
+          expect(response.statusCode).toBe(403);
+          expect(response.json().error).toMatch(/On-chain verification failed/);
+          expect(verifyDepositOnChain).toHaveBeenCalledTimes(1);
+          expect(mockPrismaTransaction).not.toHaveBeenCalled();
+        } finally {
+          if (originalWalletDb !== undefined) process.env.WALLET_DB_PATH = originalWalletDb;
+          else delete process.env.WALLET_DB_PATH;
+        }
+      });
     });
 
     // With on-chain verification enabled, the credited µUSD must be bound to the verified
@@ -1234,6 +1334,14 @@ describe('AI Revenue Routes', () => {
         // Unknown model passes through unchanged
         const unknown = byId.get('no-pricing-known') as { zchat_pricing?: unknown };
         expect(unknown.zchat_pricing).toBeUndefined();
+
+        // Trial-eligibility flags (#12/#15): whitelisted chat model → eligible; the rest → locked
+        // for trial accounts. The whitelists are also exposed top-level for the client.
+        expect((text as { zchat_trial_eligible?: boolean }).zchat_trial_eligible).toBe(true);
+        expect((image as { zchat_trial_eligible?: boolean }).zchat_trial_eligible).toBe(false);
+        expect((unknown as { zchat_trial_eligible?: boolean }).zchat_trial_eligible).toBe(false);
+        expect(body.zchat_free_tier_models).toContain('venice-uncensored-1-2');
+        expect(body.zchat_free_tier_image_models).toContain('venice-sd35');
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -1416,6 +1524,140 @@ describe('AI Revenue Routes', () => {
       });
       expect(response.statusCode).toBe(400);
       expect(response.json().error).toMatch(/n must be a finite number/);
+    });
+  });
+
+  describe('POST /api/v1/ai/image — free-trial whitelist (#15)', () => {
+    // Regression: /ai/image previously skipped the trial whitelist entirely, so a trial user
+    // could burn the $0.20 on ANY priced image model while /ai/chat blocked non-whitelisted
+    // text models. The image endpoint must gate exactly like /ai/chat.
+    function mockTrialAccount() {
+      // authenticateAiUser → findUnique({ tokenHash }); handler → findUnique({ userId })
+      mockPrismaAiAccount.findUnique.mockResolvedValue({
+        userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+      });
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValue(null); // no credited top-up → on trial
+    }
+
+    it('rejects an expensive image model for a trial user with 402 trial_model_restricted', async () => {
+      mockTrialAccount();
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue({
+        modelId: 'hunyuan-image-v3', inputPer1mUsd: 0, outputPer1mUsd: 0,
+        imagePerCallUsd: 0.1, isFreeTier: false,
+      });
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/image',
+        headers: { authorization: 'Bearer some-token' },
+        payload: { model: 'hunyuan-image-v3', prompt: 'a cat' },
+      });
+      expect(response.statusCode).toBe(402);
+      const body = response.json();
+      expect(body.code).toBe('trial_model_restricted');
+      expect(body.freeTierModels).toContain('venice-sd35');
+      // The reservation/decrement must never run for a rejected request.
+      expect(mockPrismaAiAccount.update).not.toHaveBeenCalled();
+    });
+
+    it('allows a trial user to use the whitelisted cheap image model (venice-sd35)', async () => {
+      mockTrialAccount();
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue({
+        modelId: 'venice-sd35', inputPer1mUsd: 0, outputPer1mUsd: 0,
+        imagePerCallUsd: 0.01, isFreeTier: false,
+      });
+      mockPrismaAiAccount.update.mockResolvedValue({}); // reservation decrement
+      const usageCreate = vi.fn().mockResolvedValue({});
+      mockPrismaTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb({
+          aiAccount: {
+            findUniqueOrThrow: vi.fn().mockResolvedValue({ userId: 'cuid_abc', balanceMicroUsd: 188_500n }),
+          },
+          aiUsageEvent: { create: usageCreate },
+        }),
+      );
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'img-1', images: ['aGVsbG8='] }),
+      }) as unknown as typeof fetch;
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/image',
+          headers: { authorization: 'Bearer some-token' },
+          payload: { model: 'venice-sd35', prompt: 'a cat' },
+        });
+        expect(response.statusCode).toBe(200);
+        const body = response.json();
+        expect(body.data[0].b64_json).toBe('aGVsbG8=');
+        expect(usageCreate).toHaveBeenCalled();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('exempts an isFreeTier image model from the trial gate ($0-charge contract, #221)', async () => {
+      mockTrialAccount();
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue({
+        modelId: 'lustify-free-test', inputPer1mUsd: 0, outputPer1mUsd: 0,
+        imagePerCallUsd: 0.1, isFreeTier: true, // pricey upstream but "Free" to the user
+      });
+      const usageCreate = vi.fn().mockResolvedValue({});
+      mockPrismaTransaction.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) =>
+        cb({
+          aiAccount: {
+            findUniqueOrThrow: vi.fn().mockResolvedValue({ userId: 'cuid_abc', balanceMicroUsd: 200_000n }),
+          },
+          aiUsageEvent: { create: usageCreate },
+        }),
+      );
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ id: 'img-2', images: ['aGVsbG8='] }),
+      }) as unknown as typeof fetch;
+      try {
+        const response = await server.inject({
+          method: 'POST',
+          url: '/api/v1/ai/image',
+          headers: { authorization: 'Bearer some-token' },
+          payload: { model: 'lustify-free-test', prompt: 'a cat' },
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().zchat_meta.chargedMicroUsd).toBe('0');
+        // Free-tier reserves 0 → the balance decrement must never run.
+        expect(mockPrismaAiAccount.update).not.toHaveBeenCalled();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+  });
+
+  describe('POST /api/v1/ai/chat — free-trial 402 carries a machine-readable code', () => {
+    // #14: the client must be able to distinguish "trial-restricted model" from "out of credit";
+    // both were bare 402s before.
+    it('rejects a non-whitelisted model for a trial user with code trial_model_restricted', async () => {
+      mockPrismaAiAccount.findUnique.mockResolvedValue({
+        userId: 'cuid_abc', tokenHash: 'x', balanceMicroUsd: 200_000n, freeTrialGranted: true,
+      });
+      mockPrismaAiModelPricing.findUnique.mockResolvedValue({
+        modelId: 'openai-gpt-56-sol-pro', inputPer1mUsd: 7.19, outputPer1mUsd: 43.13,
+        imagePerCallUsd: null, isFreeTier: false,
+      });
+      mockPrismaAiTopupDeposit.findFirst.mockResolvedValue(null); // on trial
+      const response = await server.inject({
+        method: 'POST',
+        url: '/api/v1/ai/chat',
+        headers: { authorization: 'Bearer some-token' },
+        payload: { model: 'openai-gpt-56-sol-pro', messages: [{ role: 'user', content: 'hi' }], max_tokens: 10 },
+      });
+      expect(response.statusCode).toBe(402);
+      const body = response.json();
+      expect(body.code).toBe('trial_model_restricted');
+      expect(body.freeTierModels).toContain('venice-uncensored');
+      expect(mockPrismaAiAccount.update).not.toHaveBeenCalled();
     });
   });
 

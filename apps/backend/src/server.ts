@@ -1693,6 +1693,25 @@ const FREE_TIER_MODELS = new Set([
   'llama-3.3-70b',
 ]);
 
+// Cheap IMAGE models eligible for the $0.20 free trial — /ai/image mirrors /ai/chat's
+// whitelist gating (#15: previously the image endpoint skipped the trial whitelist entirely,
+// so a trial user could burn the $0.20 on expensive per-call image models).
+// venice-sd35 is Venice's cheap SD3.5 model (~$0.01/image raw).
+const FREE_TIER_IMAGE_MODELS = new Set([
+  'venice-sd35',
+]);
+
+// Trial detection shared by /ai/chat, /ai/image and /ai/balance: the account received the
+// free $0.20 AND has never had a real deposit credited — its balance is purely trial money.
+async function isOnFreeTrial(account: { userId: string; freeTrialGranted: boolean }): Promise<boolean> {
+  if (!account.freeTrialGranted) return false;
+  const hasPaidTopup = await prisma.aiTopupDeposit.findFirst({
+    where: { userId: account.userId, status: 'credited' },
+    select: { id: true },
+  });
+  return hasPaidTopup === null;
+}
+
 function sha256Hex(s: string): string {
   return crypto.createHash('sha256').update(s).digest('hex');
 }
@@ -1878,6 +1897,9 @@ server.get('/api/v1/ai/balance', async (request, reply) => {
     balanceUsd: Number(account.balanceMicroUsd) / 1_000_000,
     freeTrialAvailable: !account.freeTrialGranted,
     freeTrialUsd: 0.2,
+    // #12: per-user trial state so the client can grey out trial-locked models upfront
+    // (pair with zchat_trial_eligible from /ai/models).
+    onFreeTrial: await isOnFreeTrial(account),
   };
 });
 
@@ -1962,10 +1984,17 @@ async function loadVeniceCatalog(): Promise<{ pricing: Map<string, CatalogPricin
     // text). This is the model that actually produces explicit output once safe_mode is off.
     const traits: unknown = m.model_spec?.traits;
     m.zchat_uncensored = Array.isArray(traits) && traits.some((t) => String(t).toLowerCase().includes('uncensored'));
+    const db = dbById.get(id);
+    // Trial-gating visibility (#12/#15): per-model flag so the client can render trial-locked
+    // models upfront (pair with `onFreeTrial` from /ai/balance) instead of failing at send time.
+    // The whitelists are static globals — safe to bake into the shared 24h cache. Image models
+    // additionally honor the isFreeTier ($0-charge) exemption, matching the /ai/image gate.
+    m.zchat_trial_eligible = isImage
+      ? FREE_TIER_IMAGE_MODELS.has(id) || db?.isFreeTier === true
+      : FREE_TIER_MODELS.has(id);
     // Display pricing: prefer a hand-seeded row (authoritative), else the live catalog. Marked up.
     // Only attach zchat_pricing when a REAL price exists, so the client can hide/disable any model
     // Venice lists without usable pricing (it would otherwise 400 at the charge guard anyway).
-    const db = dbById.get(id);
     const hasRealPrice = db != null ||
       (isImage ? cat.imagePerCallUsd !== null : (cat.inputPer1mUsd > 0 || cat.outputPer1mUsd > 0));
     if (!hasRealPrice) return;
@@ -1984,7 +2013,16 @@ async function loadVeniceCatalog(): Promise<{ pricing: Map<string, CatalogPricin
   };
   for (const m of textRaw) augment(m, false);
   for (const m of imageRaw) augment(m, true);
-  const result = { pricing, modelsJson: JSON.stringify({ data: [...textRaw, ...imageRaw] }) };
+  const result = {
+    pricing,
+    modelsJson: JSON.stringify({
+      data: [...textRaw, ...imageRaw],
+      // Top-level copies of the trial whitelists (#12) so the client can gate without
+      // scanning every model's zchat_trial_eligible flag.
+      zchat_free_tier_models: Array.from(FREE_TIER_MODELS),
+      zchat_free_tier_image_models: Array.from(FREE_TIER_IMAGE_MODELS),
+    }),
+  };
   if (pricing.size > 0) {
     veniceCatalogCache = result;
     veniceCatalogAt = now;
@@ -2308,19 +2346,14 @@ server.post('/api/v1/ai/chat', async (request, reply) => {
   }
 
   // FREE-TIER GATING (user requirement): until the user has consumed ALL $0.20 and topped
-  // up at least once, restrict to cheap whitelisted models. Detected via:
-  //   - has consumed any free trial (freeTrialGranted = true)
-  //   - AND no completed deposit on record
-  // i.e. balance is still purely from the free trial → restrict.
-  const hasPaidTopup = await prisma.aiTopupDeposit.findFirst({
-    where: { userId: auth.userId, status: 'credited' },
-    select: { id: true },
-  });
-  const onFreeTrial = account.freeTrialGranted && hasPaidTopup === null;
+  // up at least once, restrict to cheap whitelisted models (see isOnFreeTrial).
+  // `code` lets the client distinguish "restricted model" from "broke" — both are 402s.
+  const onFreeTrial = await isOnFreeTrial(account);
   if (onFreeTrial && !FREE_TIER_MODELS.has(model)) {
     reply.code(402);
     return {
       error: 'Free trial restricted to cheap models. Top up to unlock paid models.',
+      code: 'trial_model_restricted',
       freeTierModels: Array.from(FREE_TIER_MODELS),
     };
   }
@@ -2540,6 +2573,19 @@ server.post('/api/v1/ai/image', async (request, reply) => {
     reply.code(402);
     return { error: 'Insufficient credit. Please top up.' };
   }
+  // FREE-TIER GATING (#15): mirror /ai/chat — a trial account must not burn its $0.20 on
+  // expensive per-call image models. Whitelisted cheap image models stay available, and an
+  // explicit isFreeTier model ($0-charge contract, #221) is exempt: it never touches the
+  // user's balance, so blocking it for trial users would break its own "Free" label.
+  const onFreeTrial = await isOnFreeTrial(account);
+  if (onFreeTrial && !isFree && !FREE_TIER_IMAGE_MODELS.has(model)) {
+    reply.code(402);
+    return {
+      error: 'Free trial restricted to cheap image models. Top up to unlock paid models.',
+      code: 'trial_model_restricted',
+      freeTierModels: Array.from(FREE_TIER_IMAGE_MODELS),
+    };
+  }
   const veniceCostUsd = Number(pricing.imagePerCallUsd) * n;
   const veniceMicroUsd = microUsd(veniceCostUsd);
   const chargedMicroUsd = isFree ? 0n : microUsd(veniceCostUsd * VENICE_MARKUP);
@@ -2683,9 +2729,9 @@ server.post('/api/v1/ai/image', async (request, reply) => {
 // POST /api/v1/ai/admin/credit — manual credit (admin-only, for ZEC top-ups or refunds)
 // Body: { userId, microUsd, note? }
 //
-// Capped at $10,000 per call ($10B µUSD). If the admin secret leaks and an attacker
+// Capped at $10,000 per call (10^10 µUSD). If the admin secret leaks and an attacker
 // drives this endpoint, the per-call cap bounds damage; we still log every call.
-const ADMIN_CREDIT_MAX_MICRO_USD = 10_000n * 1_000_000n; // $10M
+const ADMIN_CREDIT_MAX_MICRO_USD = 10_000n * 1_000_000n; // 10^10 µUSD = $10,000
 server.post('/api/v1/ai/admin/credit', async (request, reply) => {
   await authenticateAdmin(request, reply);
   const body = request.body as { userId?: string; microUsd?: string; note?: string } | undefined;
@@ -2764,11 +2810,11 @@ server.post('/api/v1/ai/admin/credit-from-deposit', async (request, reply) => {
     reply.code(404);
     return { error: `AiAccount not found for userId=${body.userId}` };
   }
-  // On-chain re-verification. Set CREDIT_REQUIRE_ONCHAIN_VERIFY=1 in production so
-  // admin-key holders can't fabricate credits — the txid must actually exist in our
-  // watcher's wallet with the claimed memo and zatoshi. In dev / test we skip to keep
-  // the unit tests hermetic.
-  if (process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY === '1') {
+  // On-chain re-verification — ON BY DEFAULT (#26) so admin-key holders can't fabricate
+  // credits: the txid must actually exist in our watcher's wallet with the claimed memo
+  // and zatoshi. Opt OUT only for hermetic unit tests / wallet-less local dev by setting
+  // CREDIT_REQUIRE_ONCHAIN_VERIFY=0 explicitly — never in production.
+  if (process.env.CREDIT_REQUIRE_ONCHAIN_VERIFY !== '0') {
     const walletDbPath = process.env.WALLET_DB_PATH;
     if (!walletDbPath) {
       reply.code(503);
